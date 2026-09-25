@@ -196,9 +196,10 @@ export default function App() {
 
     connectSSE();
 
+    // Gentle 15s fallback poll to sync counters if SSE connection drops
     const interval = setInterval(() => {
       fetchStatus();
-    }, 5000);
+    }, 15000);
 
     return () => {
       isSubscribed = false;

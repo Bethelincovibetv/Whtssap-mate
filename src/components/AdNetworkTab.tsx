@@ -487,7 +487,7 @@ export const AdNetworkTab: React.FC<AdNetworkTabProps> = ({
                 Connect WhatsApp
               </button>
             </div>
-          ) : loadingGroups ? (
+          ) : loadingGroups && localGroups.length === 0 ? (
             <div className="py-12 text-center text-slate-500">
               <RefreshCw className="w-6 h-6 animate-spin mx-auto mb-2 text-emerald-500" />
               <p className="text-xs">Loading joined groups from WhatsApp...</p>

@@ -750,7 +750,7 @@ export const GroupManagerTab: React.FC<GroupManagerTabProps> = ({
           </div>
 
           {/* Groups Grid */}
-          {loading ? (
+          {loading && groups.length === 0 ? (
             <div className="py-16 text-center text-slate-500">
               <RefreshCw className="w-8 h-8 animate-spin mx-auto mb-3 text-emerald-500" />
               <p className="text-sm">Fetching all participating WhatsApp groups...</p>

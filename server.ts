@@ -322,17 +322,16 @@ function startKeepAliveLoop() {
   keepAliveTimer = setInterval(async () => {
     try {
       if (sock && connectionStatus === 'connected') {
-        // Send presence update to keep WhatsApp Web connection active
+        // Send presence update to keep WhatsApp Web session active
         await sock.sendPresenceUpdate('available').catch(() => {});
-        // If websocket is available, ping to maintain TCP tunnel
         if (sock.ws && typeof sock.ws.ping === 'function') {
           try { sock.ws.ping(); } catch (e) {}
         }
       }
     } catch (err: any) {
-      console.warn('[Keep-Alive Tick]', err?.message);
+      // Quiet background keep-alive ping
     }
-  }, 20000);
+  }, 25000);
 }
 
 
@@ -571,28 +570,32 @@ async function initWhatsApp(forceFresh = false) {
         const statusCode = lastDisconnect?.error?.output?.statusCode || lastDisconnect?.error?.statusCode;
         const isLoggedOut = statusCode === DisconnectReason.loggedOut || statusCode === 401;
         const shouldReconnect = !isLoggedOut;
-        connectionStatus = 'disconnected';
-        connectionPhase = 'closed';
-        qrCodeDataUrl = null;
         
-        addLog(`Connection closed: ${lastDisconnect?.error?.message || 'Status ' + statusCode}. Reconnecting: ${shouldReconnect}`, 'warn', 'system');
-        broadcastStateUpdate();
-
         if (isLoggedOut) {
-          addLog('Session logged out. Cleaning session storage...', 'warn', 'system');
+          connectionStatus = 'disconnected';
+          connectionPhase = 'logged_out';
+          qrCodeDataUrl = null;
+          addLog('Session logged out by WhatsApp. Resetting session credentials...', 'warn', 'system');
           try {
             fs.rmSync(AUTH_DIR, { recursive: true, force: true });
           } catch (e) {}
           activePhone = null;
           activePushName = null;
+          broadcastStateUpdate();
           setTimeout(() => {
             isInitializing = false;
             initWhatsApp(true);
           }, 2000);
         } else if (shouldReconnect) {
+          // When reconnecting transient socket drops, maintain steady state without jarring UI
+          connectionStatus = 'connecting';
+          connectionPhase = 'reconnecting';
+          broadcastStateUpdate();
+
           reconnectAttemptCount++;
-          const retryDelay = Math.min(2000 * Math.pow(1.3, Math.min(reconnectAttemptCount, 6)), 15000);
-          addLog(`Auto-reconnecting socket in ${Math.round(retryDelay / 1000)}s (Attempt #${reconnectAttemptCount}, Code: ${statusCode || 'net'})...`, 'info', 'system');
+          const retryDelay = Math.min(1500 * Math.pow(1.2, Math.min(reconnectAttemptCount, 5)), 10000);
+          addLog(`Re-establishing socket connection in ${Math.round(retryDelay / 1000)}s (Code: ${statusCode || 'transient'})...`, 'info', 'system');
+          
           setTimeout(() => {
             isInitializing = false;
             initWhatsApp(false);

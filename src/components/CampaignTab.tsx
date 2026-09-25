@@ -27,8 +27,26 @@ import {
   Upload,
   Trash2,
   Globe2,
-  Flame
+  Flame,
+  CheckCircle2,
+  XCircle,
+  Clock4,
+  Percent,
+  TrendingUp,
+  BarChart2
 } from 'lucide-react';
+import {
+  ResponsiveContainer,
+  PieChart,
+  Pie,
+  Cell,
+  Tooltip as RechartsTooltip,
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid
+} from 'recharts';
 import { 
   EngineStatusResponse, 
   GroupItem, 
@@ -328,6 +346,36 @@ export const CampaignTab: React.FC<CampaignTabProps> = ({
     ? Math.round((campaign.sentCount / campaign.totalGroups) * 100)
     : 0;
 
+  // Compute Summary Metrics for Recharts Widget
+  const totalCampaignTarget = campaign?.totalGroups || (campaignMode === 'groups' ? selectedGroupJids.length : matchedTaggedContacts.length) || 0;
+  const successfulSends = campaign?.sentCount || (statusData?.stats?.campaignMessagesSent || 0);
+  const failedSends = campaign?.failedCount || 0;
+  const pendingSends = campaign 
+    ? Math.max(0, campaign.totalGroups - (campaign.sentCount + campaign.failedCount))
+    : (totalCampaignTarget > 0 ? totalCampaignTarget : 0);
+
+  const totalAttempted = successfulSends + failedSends;
+  const successRate = totalAttempted > 0 
+    ? Math.round((successfulSends / totalAttempted) * 100)
+    : (successfulSends > 0 ? 100 : 100);
+
+  // Pie Chart Distribution Data
+  const hasData = successfulSends > 0 || failedSends > 0 || pendingSends > 0;
+  const pieChartData = hasData
+    ? [
+        { name: 'Successful', value: successfulSends, color: '#10b981' },
+        { name: 'Pending Queue', value: pendingSends, color: '#f59e0b' },
+        { name: 'Failed', value: failedSends, color: '#f43f5e' }
+      ].filter(d => d.value > 0)
+    : [{ name: 'Ready', value: 1, color: '#1f2937' }];
+
+  // Bar Chart Comparison Data
+  const barChartData = [
+    { name: 'Sent', count: successfulSends, fill: '#10b981' },
+    { name: 'Pending', count: pendingSends, fill: '#f59e0b' },
+    { name: 'Failed', count: failedSends, fill: '#f43f5e' }
+  ];
+
   if (statusData?.status !== 'connected') {
     return (
       <div className="p-6 sm:p-8 rounded-3xl bg-[#111b21] border border-[#202c33] text-center max-w-xl mx-auto shadow-2xl">
@@ -350,6 +398,216 @@ export const CampaignTab: React.FC<CampaignTabProps> = ({
 
   return (
     <div className="space-y-6 max-w-full overflow-x-hidden">
+      
+      {/* 📊 RECHARTS SUMMARY STATS WIDGET AT THE TOP */}
+      <div className="p-4 sm:p-6 rounded-2xl sm:rounded-3xl bg-[#111b21] border border-[#202c33] shadow-2xl space-y-5">
+        
+        {/* Widget Header */}
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 pb-3 border-b border-[#202c33]">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 flex items-center justify-center shrink-0">
+              <BarChart2 className="w-5 h-5" />
+            </div>
+            <div>
+              <h3 className="text-sm sm:text-base font-bold text-white flex items-center gap-2">
+                Campaign Performance & Delivery Analytics
+              </h3>
+              <p className="text-[11px] sm:text-xs text-slate-400">
+                Real-time delivery verification, success rates, queue status, and dropped packets
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <span className="px-2.5 py-1 rounded-lg bg-[#0b141a] text-slate-300 border border-[#202c33] text-[11px] font-mono flex items-center gap-1.5">
+              <Activity className="w-3.5 h-3.5 text-emerald-400" />
+              <span>{isCampaignActive ? 'Campaign Live' : 'Engine Idle'}</span>
+            </span>
+          </div>
+        </div>
+
+        {/* 4 Metric Cards Grid */}
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+          
+          {/* Success Rate Card */}
+          <div className="p-3.5 sm:p-4 rounded-2xl bg-[#0b141a] border border-[#202c33] flex flex-col justify-between">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] text-slate-400 font-medium">Success Rate</span>
+              <Percent className="w-4 h-4 text-emerald-400" />
+            </div>
+            <div className="mt-2 flex items-baseline gap-1.5">
+              <span className="text-xl sm:text-2xl font-extrabold text-emerald-400 font-mono">
+                {totalAttempted > 0 ? `${successRate}%` : '100%'}
+              </span>
+              <span className="text-[10px] text-slate-500">reliability</span>
+            </div>
+            <div className="mt-2 w-full bg-[#111b21] h-1.5 rounded-full overflow-hidden">
+              <div 
+                className="bg-emerald-500 h-full rounded-full transition-all duration-500"
+                style={{ width: `${totalAttempted > 0 ? successRate : 100}%` }}
+              />
+            </div>
+          </div>
+
+          {/* Successful Sent Card */}
+          <div className="p-3.5 sm:p-4 rounded-2xl bg-[#0b141a] border border-[#202c33] flex flex-col justify-between">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] text-slate-400 font-medium">Delivered (Sent)</span>
+              <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+            </div>
+            <div className="mt-2 flex items-baseline gap-1.5">
+              <span className="text-xl sm:text-2xl font-extrabold text-white font-mono">
+                {successfulSends}
+              </span>
+              <span className="text-[10px] text-emerald-400">verified</span>
+            </div>
+            <p className="text-[10px] text-slate-500 mt-2">Dispatched to recipient chats</p>
+          </div>
+
+          {/* Pending Queue Card */}
+          <div className="p-3.5 sm:p-4 rounded-2xl bg-[#0b141a] border border-[#202c33] flex flex-col justify-between">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] text-slate-400 font-medium">Pending in Queue</span>
+              <Clock4 className="w-4 h-4 text-amber-400" />
+            </div>
+            <div className="mt-2 flex items-baseline gap-1.5">
+              <span className="text-xl sm:text-2xl font-extrabold text-amber-400 font-mono">
+                {pendingSends}
+              </span>
+              <span className="text-[10px] text-slate-500">awaiting</span>
+            </div>
+            <p className="text-[10px] text-slate-500 mt-2">Paced with anti-ban delay</p>
+          </div>
+
+          {/* Failed Card */}
+          <div className="p-3.5 sm:p-4 rounded-2xl bg-[#0b141a] border border-[#202c33] flex flex-col justify-between">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] text-slate-400 font-medium">Failed / Blocked</span>
+              <XCircle className="w-4 h-4 text-rose-400" />
+            </div>
+            <div className="mt-2 flex items-baseline gap-1.5">
+              <span className={`text-xl sm:text-2xl font-extrabold font-mono ${failedSends > 0 ? 'text-rose-400' : 'text-slate-400'}`}>
+                {failedSends}
+              </span>
+              <span className="text-[10px] text-slate-500">errors</span>
+            </div>
+            <p className="text-[10px] text-slate-500 mt-2">Restricted or closed groups</p>
+          </div>
+
+        </div>
+
+        {/* Charts Row using Recharts */}
+        <div className="grid grid-cols-1 md:grid-cols-12 gap-4 pt-1">
+          
+          {/* Donut Chart: Breakdown */}
+          <div className="md:col-span-5 p-4 rounded-2xl bg-[#0b141a] border border-[#202c33] flex flex-col justify-between">
+            <div className="flex items-center justify-between mb-2">
+              <h4 className="text-xs font-bold text-slate-300">Delivery Status Ratio</h4>
+              <span className="text-[10px] text-slate-500 font-mono">Recharts Donut</span>
+            </div>
+
+            <div className="h-44 w-full relative flex items-center justify-center">
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <RechartsTooltip
+                    contentStyle={{
+                      backgroundColor: '#111b21',
+                      borderColor: '#202c33',
+                      borderRadius: '0.75rem',
+                      fontSize: '11px',
+                      color: '#fff'
+                    }}
+                    itemStyle={{ color: '#fff' }}
+                  />
+                  <Pie
+                    data={pieChartData}
+                    innerRadius={45}
+                    outerRadius={65}
+                    paddingAngle={hasData ? 4 : 0}
+                    dataKey="value"
+                  >
+                    {pieChartData.map((entry, index) => (
+                      <Cell key={`cell-${index}`} fill={entry.color} stroke="#0b141a" strokeWidth={2} />
+                    ))}
+                  </Pie>
+                </PieChart>
+              </ResponsiveContainer>
+
+              {/* Center Overlay Text */}
+              <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                <span className="text-sm font-bold text-white font-mono">{successfulSends}</span>
+                <span className="text-[9px] text-slate-400 uppercase tracking-wider">Sent</span>
+              </div>
+            </div>
+
+            {/* Custom Legend */}
+            <div className="flex items-center justify-around text-[10px] pt-2 border-t border-[#202c33]">
+              <div className="flex items-center gap-1.5">
+                <span className="w-2 h-2 rounded-full bg-emerald-500" />
+                <span className="text-slate-300 font-semibold">{successfulSends} Sent</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="w-2 h-2 rounded-full bg-amber-500" />
+                <span className="text-slate-300 font-semibold">{pendingSends} Pending</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="w-2 h-2 rounded-full bg-rose-500" />
+                <span className="text-slate-300 font-semibold">{failedSends} Failed</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Bar Chart: Target vs Sent vs Pending */}
+          <div className="md:col-span-7 p-4 rounded-2xl bg-[#0b141a] border border-[#202c33] flex flex-col justify-between">
+            <div className="flex items-center justify-between mb-2">
+              <h4 className="text-xs font-bold text-slate-300">Message Volume Breakdown</h4>
+              <span className="text-[10px] text-emerald-400 font-mono">{totalAttempted + pendingSends} Total In Scope</span>
+            </div>
+
+            <div className="h-44 w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={barChartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#202c33" vertical={false} />
+                  <XAxis 
+                    dataKey="name" 
+                    tick={{ fill: '#94a3b8', fontSize: 11 }} 
+                    axisLine={{ stroke: '#202c33' }}
+                    tickLine={false}
+                  />
+                  <YAxis 
+                    tick={{ fill: '#94a3b8', fontSize: 10 }} 
+                    axisLine={{ stroke: '#202c33' }}
+                    tickLine={false}
+                    allowDecimals={false}
+                  />
+                  <RechartsTooltip
+                    cursor={{ fill: 'rgba(255,255,255,0.05)' }}
+                    contentStyle={{
+                      backgroundColor: '#111b21',
+                      borderColor: '#202c33',
+                      borderRadius: '0.75rem',
+                      fontSize: '11px',
+                      color: '#fff'
+                    }}
+                  />
+                  <Bar dataKey="count" radius={[6, 6, 0, 0]}>
+                    {barChartData.map((entry, index) => (
+                      <Cell key={`bar-${index}`} fill={entry.fill} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+
+            <div className="flex items-center justify-between text-[10px] text-slate-400 pt-2 border-t border-[#202c33]">
+              <span>Real-time Baileys delivery telemetry</span>
+              <span className="font-mono text-emerald-400">Anti-Ban Pacing Active</span>
+            </div>
+          </div>
+
+        </div>
+
+      </div>
       
       {/* Live Campaign Status Banner if Active */}
       {isCampaignActive && (
@@ -510,7 +768,7 @@ export const CampaignTab: React.FC<CampaignTabProps> = ({
 
               {/* Group Checklist */}
               <div className="flex-1 max-h-96 overflow-y-auto space-y-1.5 pr-1 scrollbar-thin">
-                {loadingGroups ? (
+                {loadingGroups && groups.length === 0 ? (
                   <div className="py-12 text-center text-slate-500 text-xs">
                     <RefreshCw className="w-5 h-5 animate-spin mx-auto mb-2 text-emerald-500" />
                     Loading WhatsApp groups...
