@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { 
   Rocket, 
   ShieldCheck, 
@@ -23,7 +23,11 @@ import {
   Info,
   Tag,
   Tags,
-  UserCheck
+  UserCheck,
+  Upload,
+  Trash2,
+  Globe2,
+  Flame
 } from 'lucide-react';
 import { 
   EngineStatusResponse, 
@@ -65,11 +69,14 @@ export const CampaignTab: React.FC<CampaignTabProps> = ({
   
   // Message & Spintax State
   const [templateText, setTemplateText] = useState(
-    '{Hello|Hi|Greetings} {name|friend}! 🚀\n\n{Exciting news|Check out our latest update|Special announcement for you}: We have launched our WhatsApp Automation System.\n\n{Let us know if you have questions!|Reply directly anytime!|Reach out for exclusive details!}'
+    '{Hello|Hi|Greetings} {name|friend}! 🚀\n\n{Exciting news|Check out our latest update|Special announcement for you}: We have launched our automated broadcast campaign.\n\n{Let us know if you have questions!|Reply directly anytime!|Reach out for exclusive details!}'
   );
   const [imageUrl, setImageUrl] = useState('');
+  const [imageFileName, setImageFileName] = useState('');
   const [spintaxSamples, setSpintaxSamples] = useState<string[]>([]);
   const [loadingSpintax, setLoadingSpintax] = useState(false);
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Anti-Ban Safeguards Settings
   const [minDelaySec, setMinDelaySec] = useState(15);
@@ -165,11 +172,52 @@ export const CampaignTab: React.FC<CampaignTabProps> = ({
     }
   };
 
+  // Select all open & manageable groups for automated distribution
+  const handleSelectAllOpenGroups = () => {
+    const openGroups = groups.filter(g => !g.announce || g.isBotAdmin).map(g => g.id);
+    setSelectedGroupJids(openGroups);
+  };
+
   const handleSelectAllTags = () => {
     if (selectedTags.length === tags.length) {
       setSelectedTags([]);
     } else {
       setSelectedTags(tags.map(t => t.id));
+    }
+  };
+
+  // Direct Image Upload Handler
+  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!file.type.startsWith('image/')) {
+      setErrorMsg('Please select a valid image file (PNG, JPG, WebP).');
+      return;
+    }
+
+    if (file.size > 8 * 1024 * 1024) {
+      setErrorMsg('Image size exceeds 8MB. Please select a smaller image.');
+      return;
+    }
+
+    setImageFileName(file.name);
+    setErrorMsg(null);
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string') {
+        setImageUrl(reader.result);
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleClearImage = () => {
+    setImageUrl('');
+    setImageFileName('');
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
     }
   };
 
@@ -215,7 +263,7 @@ export const CampaignTab: React.FC<CampaignTabProps> = ({
       return;
     }
     if (!templateText && !imageUrl) {
-      setErrorMsg('Please enter message text or provide an image URL.');
+      setErrorMsg('Please enter message text or attach an image.');
       return;
     }
 
@@ -282,17 +330,17 @@ export const CampaignTab: React.FC<CampaignTabProps> = ({
 
   if (statusData?.status !== 'connected') {
     return (
-      <div className="p-8 rounded-3xl bg-[#111b21] border border-[#202c33] text-center max-w-xl mx-auto shadow-2xl">
+      <div className="p-6 sm:p-8 rounded-3xl bg-[#111b21] border border-[#202c33] text-center max-w-xl mx-auto shadow-2xl">
         <div className="w-16 h-16 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-amber-400 flex items-center justify-center mx-auto mb-4">
           <AlertTriangle className="w-8 h-8" />
         </div>
         <h3 className="text-lg font-bold text-white mb-2">Connect WhatsApp To Launch Campaigns</h3>
-        <p className="text-slate-400 text-sm mb-6 leading-relaxed">
-          Link your WhatsApp number using the 8-Digit Pairing Code to broadcast multi-group messages or tag-targeted direct broadcasts with randomized anti-ban pacing.
+        <p className="text-slate-400 text-xs sm:text-sm mb-6 leading-relaxed">
+          Link your WhatsApp number using the 8-Digit Pairing Code to broadcast multi-group messages with randomized anti-ban pacing and image attachments.
         </p>
         <button
           onClick={onRefresh}
-          className="px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-sm transition-all shadow-lg cursor-pointer"
+          className="px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs sm:text-sm transition-all shadow-lg cursor-pointer"
         >
           Check Connection
         </button>
@@ -301,11 +349,11 @@ export const CampaignTab: React.FC<CampaignTabProps> = ({
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 max-w-full overflow-x-hidden">
       
       {/* Live Campaign Status Banner if Active */}
       {isCampaignActive && (
-        <div className="p-6 rounded-3xl bg-gradient-to-r from-[#111b21] to-[#0c1f17] border border-emerald-500/40 shadow-2xl space-y-4">
+        <div className="p-4 sm:p-6 rounded-2xl sm:rounded-3xl bg-gradient-to-r from-[#111b21] to-[#0c1f17] border border-emerald-500/40 shadow-2xl space-y-4">
           <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
             <div>
               <div className="flex items-center gap-2 mb-1">
@@ -317,7 +365,7 @@ export const CampaignTab: React.FC<CampaignTabProps> = ({
                     campaign.status === 'running' ? 'bg-emerald-500' : campaign.status === 'batch_pausing' ? 'bg-amber-500' : 'bg-slate-500'
                   }`}></span>
                 </span>
-                <h3 className="text-base font-bold text-white">
+                <h3 className="text-sm sm:text-base font-bold text-white">
                   {campaign.status === 'running' && 'Active Broadcast Campaign in Progress'}
                   {campaign.status === 'batch_pausing' && 'Anti-Ban Batch Pause Active (Resting)'}
                   {campaign.status === 'paused' && 'Campaign Paused'}
@@ -329,12 +377,12 @@ export const CampaignTab: React.FC<CampaignTabProps> = ({
             </div>
 
             {/* Campaign Action Controls */}
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               {campaign.status === 'running' ? (
                 <button
                   onClick={() => handleCampaignAction('pause')}
                   disabled={actionLoading}
-                  className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 text-xs font-semibold transition-all cursor-pointer"
+                  className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 text-xs font-semibold transition-all cursor-pointer"
                 >
                   <Pause className="w-3.5 h-3.5" /> Pause
                 </button>
@@ -342,7 +390,7 @@ export const CampaignTab: React.FC<CampaignTabProps> = ({
                 <button
                   onClick={() => handleCampaignAction('resume')}
                   disabled={actionLoading}
-                  className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold transition-all cursor-pointer"
+                  className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold transition-all cursor-pointer"
                 >
                   <Play className="w-3.5 h-3.5" /> Resume
                 </button>
@@ -351,7 +399,7 @@ export const CampaignTab: React.FC<CampaignTabProps> = ({
               <button
                 onClick={() => handleCampaignAction('cancel')}
                 disabled={actionLoading}
-                className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/30 text-xs font-semibold transition-all cursor-pointer"
+                className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/30 text-xs font-semibold transition-all cursor-pointer"
               >
                 <Square className="w-3.5 h-3.5" /> Stop / Cancel
               </button>
@@ -360,22 +408,22 @@ export const CampaignTab: React.FC<CampaignTabProps> = ({
 
           {/* Progress Bar */}
           <div className="space-y-1.5">
-            <div className="w-full bg-[#0b141a] rounded-full h-3.5 p-0.5 border border-[#202c33] overflow-hidden">
+            <div className="w-full bg-[#0b141a] rounded-full h-3 p-0.5 border border-[#202c33] overflow-hidden">
               <div
                 className="bg-gradient-to-r from-emerald-500 to-teal-400 h-full rounded-full transition-all duration-500"
                 style={{ width: `${progressPercent}%` }}
               ></div>
             </div>
             
-            <div className="flex items-center justify-between text-[11px] text-slate-400 font-mono">
-              <span>Current Target: {campaign.currentGroupJid ? campaign.currentGroupJid.split('@')[0] : '–'}</span>
+            <div className="flex items-center justify-between text-[10px] sm:text-[11px] text-slate-400 font-mono flex-wrap gap-1">
+              <span>Target: {campaign.currentGroupJid ? campaign.currentGroupJid.split('@')[0] : '–'}</span>
               {campaign.status === 'batch_pausing' ? (
                 <span className="text-amber-400 font-bold">
                   Batch Pause: {Math.floor(campaign.batchPauseRemainingSec / 60)}m {campaign.batchPauseRemainingSec % 60}s remaining
                 </span>
               ) : campaign.nextSendInSec > 0 ? (
-                <span className="text-emerald-400">
-                  Next send in {campaign.nextSendInSec}s (Anti-Ban Jitter)
+                <span className="text-emerald-400 font-bold">
+                  Next send in {campaign.nextSendInSec}s (Anti-Ban Pacing)
                 </span>
               ) : (
                 <span>Sending...</span>
@@ -386,10 +434,10 @@ export const CampaignTab: React.FC<CampaignTabProps> = ({
       )}
 
       {/* Campaign Mode Selection Tabs */}
-      <div className="p-1.5 rounded-2xl bg-[#111b21] border border-[#202c33] flex items-center gap-2">
+      <div className="p-1.5 rounded-2xl bg-[#111b21] border border-[#202c33] flex flex-col sm:flex-row items-center gap-2">
         <button
           onClick={() => setCampaignMode('groups')}
-          className={`flex-1 flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl text-xs md:text-sm font-semibold transition-all cursor-pointer ${
+          className={`w-full sm:flex-1 flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl text-xs md:text-sm font-semibold transition-all cursor-pointer ${
             campaignMode === 'groups'
               ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-lg'
               : 'text-slate-400 hover:text-white hover:bg-[#202c33]'
@@ -401,14 +449,14 @@ export const CampaignTab: React.FC<CampaignTabProps> = ({
 
         <button
           onClick={() => setCampaignMode('tagged_contacts')}
-          className={`flex-1 flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl text-xs md:text-sm font-semibold transition-all cursor-pointer ${
+          className={`w-full sm:flex-1 flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl text-xs md:text-sm font-semibold transition-all cursor-pointer ${
             campaignMode === 'tagged_contacts'
               ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-lg'
               : 'text-slate-400 hover:text-white hover:bg-[#202c33]'
           }`}
         >
           <Tags className="w-4 h-4" />
-          <span>Tag-Targeted Broadcast ({matchedTaggedContacts.length} Contacts Matched)</span>
+          <span>Tag-Targeted Broadcast ({matchedTaggedContacts.length} Matched)</span>
         </button>
       </div>
 
@@ -416,15 +464,15 @@ export const CampaignTab: React.FC<CampaignTabProps> = ({
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         
         {/* Left Column: Target Selector (Groups vs Tags) */}
-        <div className="lg:col-span-5 p-5 rounded-2xl bg-[#111b21] border border-[#202c33] flex flex-col space-y-4 shadow-xl">
+        <div className="lg:col-span-5 p-4 sm:p-5 rounded-2xl bg-[#111b21] border border-[#202c33] flex flex-col space-y-4 shadow-xl">
           
           {/* MODE A: GROUPS SELECTOR */}
           {campaignMode === 'groups' && (
             <>
               <div className="flex items-center justify-between">
-                <h4 className="font-bold text-white text-sm flex items-center gap-2">
+                <h4 className="font-bold text-white text-xs sm:text-sm flex items-center gap-2">
                   <Users className="w-4 h-4 text-emerald-400" />
-                  1. Select Target Groups ({selectedGroupJids.length} chosen)
+                  1. Select Target Groups ({selectedGroupJids.length})
                 </h4>
                 <button
                   onClick={fetchGroups}
@@ -435,24 +483,33 @@ export const CampaignTab: React.FC<CampaignTabProps> = ({
                 </button>
               </div>
 
-              <div className="flex items-center gap-2">
-                <input
-                  type="text"
-                  value={searchGroup}
-                  onChange={(e) => setSearchGroup(e.target.value)}
-                  placeholder="Search groups..."
-                  className="flex-1 bg-[#0b141a] border border-[#202c33] rounded-xl px-3 py-1.5 text-xs text-white placeholder-slate-600 outline-none focus:border-emerald-500"
-                />
+              {/* Quick Select Buttons */}
+              <div className="flex flex-wrap items-center gap-1.5">
+                <button
+                  onClick={handleSelectAllOpenGroups}
+                  className="px-2.5 py-1.5 rounded-xl bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 text-[11px] font-bold text-emerald-300 transition-all cursor-pointer"
+                >
+                  ⚡ All Open Groups ({groups.filter(g => !g.announce || g.isBotAdmin).length})
+                </button>
+
                 <button
                   onClick={handleSelectAllGroups}
-                  className="px-2.5 py-1.5 rounded-xl bg-[#0b141a] hover:bg-[#202c33] border border-[#202c33] text-[11px] font-semibold text-slate-300 transition-all cursor-pointer shrink-0"
+                  className="px-2.5 py-1.5 rounded-xl bg-[#0b141a] hover:bg-[#202c33] border border-[#202c33] text-[11px] font-semibold text-slate-300 transition-all cursor-pointer"
                 >
-                  {selectedGroupJids.length === filteredGroups.length && filteredGroups.length > 0 ? 'Deselect' : 'Select All'}
+                  {selectedGroupJids.length === filteredGroups.length && filteredGroups.length > 0 ? 'Deselect All' : 'Select All'}
                 </button>
               </div>
 
+              <input
+                type="text"
+                value={searchGroup}
+                onChange={(e) => setSearchGroup(e.target.value)}
+                placeholder="Search groups..."
+                className="w-full bg-[#0b141a] border border-[#202c33] rounded-xl px-3 py-2 text-xs text-white placeholder-slate-600 outline-none focus:border-emerald-500"
+              />
+
               {/* Group Checklist */}
-              <div className="flex-1 max-h-96 overflow-y-auto space-y-1.5 pr-1">
+              <div className="flex-1 max-h-96 overflow-y-auto space-y-1.5 pr-1 scrollbar-thin">
                 {loadingGroups ? (
                   <div className="py-12 text-center text-slate-500 text-xs">
                     <RefreshCw className="w-5 h-5 animate-spin mx-auto mb-2 text-emerald-500" />
@@ -475,8 +532,8 @@ export const CampaignTab: React.FC<CampaignTabProps> = ({
                             : 'bg-[#0b141a] border-[#202c33] text-slate-300 hover:border-slate-700'
                         }`}
                       >
-                        <div className="flex items-center gap-2.5 truncate">
-                          <div className={`w-4 h-4 rounded flex items-center justify-center border transition-all ${
+                        <div className="flex items-center gap-2.5 truncate min-w-0">
+                          <div className={`w-4 h-4 rounded flex items-center justify-center border shrink-0 transition-all ${
                             isSelected ? 'bg-emerald-500 border-emerald-500 text-white' : 'border-slate-600'
                           }`}>
                             {isSelected && <Check className="w-3 h-3 stroke-[3]" />}
@@ -488,9 +545,13 @@ export const CampaignTab: React.FC<CampaignTabProps> = ({
                         </div>
 
                         <div className="flex items-center gap-1.5 shrink-0">
-                          {group.isBotAdmin && (
+                          {group.announce && !group.isBotAdmin ? (
+                            <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400">
+                              Admin Only
+                            </span>
+                          ) : (
                             <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400">
-                              ADMIN
+                              Open
                             </span>
                           )}
                           <span className="text-[10px] text-slate-400">
@@ -509,9 +570,9 @@ export const CampaignTab: React.FC<CampaignTabProps> = ({
           {campaignMode === 'tagged_contacts' && (
             <>
               <div className="flex items-center justify-between">
-                <h4 className="font-bold text-white text-sm flex items-center gap-2">
+                <h4 className="font-bold text-white text-xs sm:text-sm flex items-center gap-2">
                   <Tags className="w-4 h-4 text-emerald-400" />
-                  1. Target Contact Categories ({selectedTags.length} Tags Selected)
+                  1. Target Categories ({selectedTags.length} Selected)
                 </h4>
                 <button
                   onClick={fetchTagsAndContacts}
@@ -522,13 +583,9 @@ export const CampaignTab: React.FC<CampaignTabProps> = ({
                 </button>
               </div>
 
-              <p className="text-xs text-slate-400">
-                Messages will be sent directly to individual chats of contacts matching any selected category tag with anti-ban delay.
-              </p>
-
               <div className="flex items-center justify-between">
                 <span className="text-xs font-semibold text-emerald-400">
-                  Total Audience: {matchedTaggedContacts.length} Contacts
+                  Audience: {matchedTaggedContacts.length} Contacts
                 </span>
                 <button
                   onClick={handleSelectAllTags}
@@ -539,7 +596,7 @@ export const CampaignTab: React.FC<CampaignTabProps> = ({
               </div>
 
               {/* Tag Selector Cards */}
-              <div className="space-y-2 max-h-96 overflow-y-auto pr-1">
+              <div className="space-y-2 max-h-96 overflow-y-auto pr-1 scrollbar-thin">
                 {tags.map(tag => {
                   const isSelected = selectedTags.includes(tag.id);
                   const count = contacts.filter(c => c.tags?.includes(tag.id)).length;
@@ -557,26 +614,26 @@ export const CampaignTab: React.FC<CampaignTabProps> = ({
                         borderColor: isSelected ? tag.color : undefined
                       }}
                     >
-                      <div className="flex items-center gap-3">
-                        <div className={`w-4 h-4 rounded flex items-center justify-center border transition-all ${
+                      <div className="flex items-center gap-3 truncate min-w-0">
+                        <div className={`w-4 h-4 rounded flex items-center justify-center border shrink-0 transition-all ${
                           isSelected ? 'text-white' : 'border-slate-600'
                         }`}
                         style={{ backgroundColor: isSelected ? tag.color : undefined, borderColor: isSelected ? tag.color : undefined }}
                         >
                           {isSelected && <Check className="w-3 h-3 stroke-[3]" />}
                         </div>
-                        <div>
+                        <div className="truncate">
                           <div className="flex items-center gap-2">
-                            <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: tag.color }} />
-                            <p className="text-xs font-bold text-white">{tag.name}</p>
+                            <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: tag.color }} />
+                            <p className="text-xs font-bold text-white truncate">{tag.name}</p>
                           </div>
                           {tag.description && (
-                            <p className="text-[10px] text-slate-400 mt-0.5">{tag.description}</p>
+                            <p className="text-[10px] text-slate-400 mt-0.5 truncate">{tag.description}</p>
                           )}
                         </div>
                       </div>
 
-                      <div className="text-right">
+                      <div className="text-right shrink-0">
                         <span className="text-xs font-bold text-white font-mono">{count}</span>
                         <span className="text-[10px] text-slate-500 block">contacts</span>
                       </div>
@@ -589,13 +646,13 @@ export const CampaignTab: React.FC<CampaignTabProps> = ({
 
         </div>
 
-        {/* Right Column: Template, Spintax & Anti-Ban Config */}
+        {/* Right Column: Template, Image Attachment & Anti-Ban Config */}
         <div className="lg:col-span-7 space-y-4">
           
           {/* Spintax Message Composer */}
-          <div className="p-5 rounded-2xl bg-[#111b21] border border-[#202c33] space-y-4 shadow-xl">
-            <div className="flex items-center justify-between">
-              <h4 className="font-bold text-white text-sm flex items-center gap-2">
+          <div className="p-4 sm:p-5 rounded-2xl bg-[#111b21] border border-[#202c33] space-y-4 shadow-xl">
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <h4 className="font-bold text-white text-xs sm:text-sm flex items-center gap-2">
                 <Shuffle className="w-4 h-4 text-emerald-400" />
                 2. Spintax Message Composer
               </h4>
@@ -609,63 +666,102 @@ export const CampaignTab: React.FC<CampaignTabProps> = ({
               </button>
             </div>
 
-            {/* Quick Personalization Variables Bar */}
+            {/* Variables Bar */}
             {campaignMode === 'tagged_contacts' && (
               <div className="flex flex-wrap items-center gap-1.5 bg-[#0b141a] p-2.5 rounded-xl border border-[#202c33]">
-                <span className="text-[10px] font-bold text-slate-400 uppercase mr-1">Insert Variables:</span>
-                {[
-                  { label: '{name}', desc: 'Full Name' },
-                  { label: '{first_name}', desc: 'First Name' },
-                  { label: '{phone}', desc: 'Phone Number' },
-                  { label: '{tag}', desc: 'Primary Tag' }
-                ].map(v => (
+                <span className="text-[10px] font-bold text-slate-400 uppercase mr-1">Variables:</span>
+                {['{name}', '{first_name}', '{phone}', '{tag}'].map(v => (
                   <button
-                    key={v.label}
+                    key={v}
                     type="button"
-                    onClick={() => insertVariable(v.label)}
+                    onClick={() => insertVariable(v)}
                     className="px-2 py-1 rounded-lg bg-[#111b21] hover:bg-emerald-600/30 text-emerald-400 text-[11px] font-mono border border-emerald-500/20 transition-all cursor-pointer"
                   >
-                    {v.label}
+                    {v}
                   </button>
                 ))}
               </div>
             )}
 
-            <div className="relative">
-              <textarea
-                value={templateText}
-                onChange={(e) => setTemplateText(e.target.value)}
-                rows={6}
-                placeholder="Type message using Spintax syntax like {Hello|Hi|Hey} {name|friend}..."
-                className="w-full bg-[#0b141a] border border-[#202c33] focus:border-emerald-500 rounded-xl p-3 text-xs md:text-sm text-white placeholder-slate-600 outline-none font-mono leading-relaxed"
-              />
-            </div>
+            <textarea
+              value={templateText}
+              onChange={(e) => setTemplateText(e.target.value)}
+              rows={5}
+              placeholder="Type message using Spintax syntax like {Hello|Hi|Hey} {name|friend}..."
+              className="w-full bg-[#0b141a] border border-[#202c33] focus:border-emerald-500 rounded-xl p-3 text-xs md:text-sm text-white placeholder-slate-600 outline-none font-mono leading-relaxed resize-none"
+            />
 
-            <div className="flex items-center gap-2 text-[11px] text-slate-400 bg-[#0b141a] p-2.5 rounded-xl border border-[#202c33]">
-              <Info className="w-4 h-4 text-emerald-400 shrink-0" />
-              <span>
-                <strong>Anti-Ban Engine:</strong> Wrap words in <code className="text-emerald-400">{`{Option1|Option2|Option3}`}</code>. Each recipient receives a unique hash to prevent spam detection.
-              </span>
-            </div>
+            {/* Direct Image File Upload Section */}
+            <div className="p-3.5 rounded-2xl bg-[#0b141a] border border-[#202c33] space-y-3">
+              <div className="flex items-center justify-between flex-wrap gap-1">
+                <label className="text-xs font-bold text-white flex items-center gap-1.5">
+                  <ImageIcon className="w-4 h-4 text-emerald-400" />
+                  Attach Campaign Image (Upload or URL)
+                </label>
+                <span className="text-[10px] text-slate-400">PNG, JPG, WebP</span>
+              </div>
 
-            {/* Optional Image URL */}
-            <div>
-              <label className="text-xs font-semibold text-slate-300 mb-1.5 block flex items-center gap-1.5">
-                <ImageIcon className="w-3.5 h-3.5 text-blue-400" /> Optional Image Media URL
-              </label>
+              <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  onChange={handleImageUpload}
+                  className="hidden"
+                  id="campaign-image-upload"
+                />
+
+                <label
+                  htmlFor="campaign-image-upload"
+                  className="flex items-center gap-2 px-4 py-2 rounded-xl bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/40 text-xs font-semibold cursor-pointer transition-all w-full sm:w-auto justify-center"
+                >
+                  <Upload className="w-3.5 h-3.5" />
+                  <span>{imageUrl ? 'Change Image File' : 'Upload Image File'}</span>
+                </label>
+
+                {imageUrl && (
+                  <button
+                    type="button"
+                    onClick={handleClearImage}
+                    className="flex items-center gap-1 px-3 py-2 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20 text-xs font-medium cursor-pointer transition-all"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Remove</span>
+                  </button>
+                )}
+              </div>
+
+              {/* URL Fallback */}
               <input
-                type="text"
-                value={imageUrl}
+                type="url"
+                value={imageUrl.startsWith('data:') ? '' : imageUrl}
                 onChange={(e) => setImageUrl(e.target.value)}
-                placeholder="https://example.com/promo-banner.jpg"
-                className="w-full bg-[#0b141a] border border-[#202c33] focus:border-emerald-500 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-600 outline-none"
+                placeholder="Or enter image URL: https://example.com/banner.jpg"
+                className="w-full bg-[#111b21] border border-[#202c33] focus:border-emerald-500 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-600 outline-none"
               />
+
+              {/* Image Preview Box */}
+              {imageUrl && (
+                <div className="relative rounded-xl overflow-hidden border border-emerald-500/40 bg-black/40 p-2 flex items-center gap-3">
+                  <img
+                    src={imageUrl}
+                    alt="Preview"
+                    className="w-16 h-16 object-cover rounded-lg border border-[#202c33]"
+                  />
+                  <div className="text-xs space-y-0.5 truncate">
+                    <p className="font-semibold text-emerald-300 truncate">
+                      {imageFileName || 'Campaign Banner Image Attached'}
+                    </p>
+                    <p className="text-[10px] text-slate-400">Sent with caption to all recipients</p>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Spintax Samples Preview Box */}
             {spintaxSamples.length > 0 && (
               <div className="p-3 rounded-xl bg-[#0b141a] border border-emerald-500/20 space-y-2">
-                <p className="text-[11px] font-bold text-emerald-400 uppercase tracking-wider">Live Spintax Variations Generated:</p>
+                <p className="text-[10px] font-bold text-emerald-400 uppercase tracking-wider">Live Spintax Variations:</p>
                 {spintaxSamples.map((sample, idx) => (
                   <div key={idx} className="p-2 rounded-lg bg-[#111b21] border border-[#202c33] text-xs text-slate-200 font-mono whitespace-pre-wrap">
                     <span className="text-slate-500 text-[10px] mr-2">#{idx + 1}</span>
@@ -676,23 +772,21 @@ export const CampaignTab: React.FC<CampaignTabProps> = ({
             )}
           </div>
 
-          {/* Anti-Ban Pacing & Jitter Controls */}
-          <div className="p-5 rounded-2xl bg-[#111b21] border border-[#202c33] space-y-4 shadow-xl">
-            <h4 className="font-bold text-white text-sm flex items-center gap-2">
+          {/* Anti-Ban Pacing Controls */}
+          <div className="p-4 sm:p-5 rounded-2xl bg-[#111b21] border border-[#202c33] space-y-4 shadow-xl">
+            <h4 className="font-bold text-white text-xs sm:text-sm flex items-center gap-2">
               <ShieldCheck className="w-4 h-4 text-emerald-400" />
-              3. Anti-Ban Pacing & Flood Safeguards
+              3. Anti-Ban Random Pacing & Safeguards
             </h4>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              
-              {/* Delay Range Slider */}
-              <div className="p-3.5 rounded-xl bg-[#0b141a] border border-[#202c33] space-y-2">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="p-3 rounded-xl bg-[#0b141a] border border-[#202c33] space-y-2">
                 <div className="flex items-center justify-between text-xs font-semibold text-slate-300">
                   <span>Random Jitter Interval</span>
                   <span className="text-emerald-400 font-mono">{minDelaySec}s – {maxDelaySec}s</span>
                 </div>
-                <div className="flex items-center gap-3">
-                  <span className="text-[10px] text-slate-500">Min (5s)</span>
+                <div className="flex items-center gap-2">
+                  <span className="text-[9px] text-slate-500">5s</span>
                   <input
                     type="range"
                     min="5"
@@ -717,50 +811,40 @@ export const CampaignTab: React.FC<CampaignTabProps> = ({
                     }}
                     className="flex-1 accent-emerald-500 cursor-pointer"
                   />
-                  <span className="text-[10px] text-slate-500">Max (90s)</span>
+                  <span className="text-[9px] text-slate-500">90s</span>
                 </div>
-                <p className="text-[10px] text-slate-500">Adds unpredictable delay between every single send.</p>
               </div>
 
-              {/* Batch Pause Settings */}
-              <div className="p-3.5 rounded-xl bg-[#0b141a] border border-[#202c33] space-y-2">
+              <div className="p-3 rounded-xl bg-[#0b141a] border border-[#202c33] space-y-2">
                 <div className="flex items-center justify-between text-xs font-semibold text-slate-300">
                   <span>Batch Rest Pause</span>
-                  <span className="text-emerald-400 font-mono">Rest {batchPauseMinutes}m every {batchSize} sends</span>
+                  <span className="text-emerald-400 font-mono">{batchPauseMinutes}m rest / {batchSize} sends</span>
                 </div>
                 <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <label className="text-[10px] text-slate-500 block mb-1">Batch Size</label>
-                    <select
-                      value={batchSize}
-                      onChange={(e) => setBatchSize(Number(e.target.value))}
-                      className="w-full bg-[#111b21] border border-[#202c33] rounded-lg px-2 py-1 text-xs text-white outline-none"
-                    >
-                      <option value={5}>Every 5 messages</option>
-                      <option value={10}>Every 10 messages</option>
-                      <option value={15}>Every 15 messages</option>
-                      <option value={20}>Every 20 messages</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className="text-[10px] text-slate-500 block mb-1">Pause Duration</label>
-                    <select
-                      value={batchPauseMinutes}
-                      onChange={(e) => setBatchPauseMinutes(Number(e.target.value))}
-                      className="w-full bg-[#111b21] border border-[#202c33] rounded-lg px-2 py-1 text-xs text-white outline-none"
-                    >
-                      <option value={1}>1 Minute</option>
-                      <option value={2}>2 Minutes</option>
-                      <option value={3}>3 Minutes (Recommended)</option>
-                      <option value={5}>5 Minutes</option>
-                    </select>
-                  </div>
+                  <select
+                    value={batchSize}
+                    onChange={(e) => setBatchSize(Number(e.target.value))}
+                    className="bg-[#111b21] border border-[#202c33] rounded-lg px-2 py-1 text-xs text-white outline-none"
+                  >
+                    <option value={5}>Every 5 sends</option>
+                    <option value={10}>Every 10 sends</option>
+                    <option value={15}>Every 15 sends</option>
+                    <option value={20}>Every 20 sends</option>
+                  </select>
+                  <select
+                    value={batchPauseMinutes}
+                    onChange={(e) => setBatchPauseMinutes(Number(e.target.value))}
+                    className="bg-[#111b21] border border-[#202c33] rounded-lg px-2 py-1 text-xs text-white outline-none"
+                  >
+                    <option value={1}>1 Min Rest</option>
+                    <option value={2}>2 Min Rest</option>
+                    <option value={3}>3 Min Rest</option>
+                    <option value={5}>5 Min Rest</option>
+                  </select>
                 </div>
               </div>
-
             </div>
 
-            {/* Error Message */}
             {errorMsg && (
               <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-400 text-xs flex items-center gap-2">
                 <AlertTriangle className="w-4 h-4 shrink-0" />
@@ -768,7 +852,7 @@ export const CampaignTab: React.FC<CampaignTabProps> = ({
               </div>
             )}
 
-            {/* Launch Campaign Action */}
+            {/* Launch Action */}
             <button
               onClick={handleStartCampaign}
               disabled={
@@ -777,12 +861,12 @@ export const CampaignTab: React.FC<CampaignTabProps> = ({
                 (campaignMode === 'groups' && selectedGroupJids.length === 0) ||
                 (campaignMode === 'tagged_contacts' && selectedTags.length === 0)
               }
-              className="w-full py-3.5 px-6 rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-500 hover:from-emerald-500 hover:to-teal-400 text-white font-bold text-sm transition-all shadow-xl disabled:opacity-40 flex items-center justify-center gap-2 cursor-pointer"
+              className="w-full py-3.5 px-6 rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-500 hover:from-emerald-500 hover:to-teal-400 text-white font-bold text-xs sm:text-sm transition-all shadow-xl disabled:opacity-40 flex items-center justify-center gap-2 cursor-pointer"
             >
               {startingCampaign ? (
                 <>
                   <RefreshCw className="w-4 h-4 animate-spin" />
-                  <span>Initiating Targeted Broadcast Campaign...</span>
+                  <span>Initiating Automated Broadcast Campaign...</span>
                 </>
               ) : (
                 <>

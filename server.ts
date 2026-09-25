@@ -1239,6 +1239,17 @@ app.post('/api/logout', async (req: Request, res: Response) => {
   }
 });
 
+function prepareImagePayload(imageUrlOrData: string): { image: any } {
+  if (imageUrlOrData.startsWith('data:')) {
+    const base64Index = imageUrlOrData.indexOf(';base64,');
+    if (base64Index !== -1) {
+      const base64Data = imageUrlOrData.slice(base64Index + 8);
+      return { image: Buffer.from(base64Data, 'base64') };
+    }
+  }
+  return { image: { url: imageUrlOrData } };
+}
+
 // 6. Post Status Update (Story Broadcast)
 app.post('/api/status/post', async (req: Request, res: Response) => {
   try {
@@ -1255,8 +1266,9 @@ app.post('/api/status/post', async (req: Request, res: Response) => {
     addLog(`Broadcasting new WhatsApp status story...`, 'info', 'status');
 
     if (imageUrl) {
+      const imgPayload = prepareImagePayload(imageUrl);
       await sock.sendMessage('status@broadcast', {
-        image: { url: imageUrl },
+        ...imgPayload,
         caption: text || ''
       }, {
         statusJidList: []
@@ -1881,6 +1893,17 @@ app.post('/api/groups/invite-code', async (req: Request, res: Response) => {
   }
 });
 
+// Image Upload Endpoint (stores or returns data URL / local asset)
+app.post('/api/upload-image', (req: Request, res: Response) => {
+  try {
+    const { dataUrl, fileName } = req.body;
+    if (!dataUrl) return res.status(400).json({ error: 'Provide dataUrl.' });
+    res.json({ success: true, url: dataUrl });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // 9. AUTOMATED MULTI-GROUP & TAGGED CONTACT BROADCAST CAMPAIGN ENGINE (ANTI-BAN SAFEGUARDS)
 
 // Spintax Preview API
@@ -2023,8 +2046,9 @@ async function runCampaignStep() {
     const messageContent = parseSpintax(rawText);
     
     if (currentCampaign.imageUrl) {
+      const imgPayload = prepareImagePayload(currentCampaign.imageUrl);
       await sock.sendMessage(jid, {
-        image: { url: currentCampaign.imageUrl },
+        ...imgPayload,
         caption: messageContent
       });
     } else {

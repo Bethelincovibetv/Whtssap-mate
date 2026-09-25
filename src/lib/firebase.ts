@@ -77,6 +77,21 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
   throw new Error(JSON.stringify(errInfo));
 }
 
+// Data Sanitizer to prevent "Unsupported field value: undefined" errors in Firestore
+export function sanitizeFirestoreData<T extends Record<string, any>>(data: T): T {
+  const result: any = {};
+  for (const [key, value] of Object.entries(data)) {
+    if (value === undefined) {
+      continue; // omit undefined keys completely
+    } else if (value !== null && typeof value === 'object' && !Array.isArray(value) && !(value instanceof Date)) {
+      result[key] = sanitizeFirestoreData(value);
+    } else {
+      result[key] = value;
+    }
+  }
+  return result;
+}
+
 // Test Connection on Boot
 export async function testFirestoreConnection() {
   try {
@@ -107,7 +122,7 @@ export async function loginWithGoogle() {
     const userRef = doc(db, 'users', user.uid);
     const isAdmin = isUserAdmin(user);
     
-    await setDoc(userRef, {
+    const userProfileData = sanitizeFirestoreData({
       uid: user.uid,
       email: user.email || '',
       displayName: user.displayName || user.email?.split('@')[0] || 'Promoter',
@@ -118,16 +133,18 @@ export async function loginWithGoogle() {
       totalAdsPublished: 0,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
-    }, { merge: true });
+    });
+
+    await setDoc(userRef, userProfileData, { merge: true });
 
     // Ensure Admin Record exists if this is the target admin email
     if (isAdmin) {
       try {
-        await setDoc(doc(db, 'admins', user.uid), {
+        await setDoc(doc(db, 'admins', user.uid), sanitizeFirestoreData({
           email: user.email,
           role: 'super_admin',
           grantedAt: new Date().toISOString()
-        }, { merge: true });
+        }), { merge: true });
       } catch (e) {
         console.warn('Admin record sync note:', e);
       }

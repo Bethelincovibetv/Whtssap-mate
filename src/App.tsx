@@ -78,7 +78,7 @@ export default function App() {
         setStatusData(data);
       }
     } catch (e) {
-      console.error('Error fetching engine status:', e);
+      console.warn('Engine status poll note:', e);
     }
   }, []);
 
@@ -90,7 +90,7 @@ export default function App() {
         if (data.logs) setLogs(data.logs);
       }
     } catch (e) {
-      console.error('Error fetching logs:', e);
+      console.warn('Logs poll note:', e);
     }
   }, []);
 
@@ -226,7 +226,7 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-[#0b141a] text-slate-100 flex flex-col font-sans antialiased selection:bg-emerald-500 selection:text-white">
+    <div className="min-h-screen max-w-full overflow-x-hidden bg-[#0b141a] text-slate-100 flex flex-col font-sans antialiased selection:bg-emerald-500 selection:text-white">
       
       {/* Mobile & Desktop Sidebar Navigation */}
       <Sidebar
@@ -247,7 +247,7 @@ export default function App() {
       />
 
       {/* Main App Layout Wrapper with Desktop Left Margin for Sidebar */}
-      <div className="flex-1 flex flex-col lg:pl-72 xl:pl-80 transition-all duration-300">
+      <div className="flex-1 max-w-full min-w-0 overflow-x-hidden flex flex-col lg:pl-72 xl:pl-80 transition-all duration-300">
         
         {/* Top App Bar Header */}
         <Header
@@ -263,7 +263,7 @@ export default function App() {
         />
 
         {/* Main Content Area */}
-        <main className="flex-1 max-w-7xl w-full mx-auto px-3 sm:px-6 lg:px-8 py-5">
+        <main className="flex-1 max-w-7xl w-full mx-auto px-2 sm:px-6 lg:px-8 py-3.5 sm:py-5 min-w-0 overflow-x-hidden">
           {activeTab === 'landing' && (
             <LandingPage
               currentUser={currentUser}
