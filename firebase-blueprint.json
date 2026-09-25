@@ -1,0 +1,118 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User profile with role-based access for promoters, advertisers and admins",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128 },
+        "email": { "type": "string", "maxLength": 256 },
+        "displayName": { "type": "string", "maxLength": 128 },
+        "photoURL": { "type": "string", "maxLength": 1024 },
+        "role": { "type": "string", "enum": ["admin", "promoter", "advertiser", "user"], "maxLength": 32 },
+        "isAdmin": { "type": "boolean" },
+        "totalEarned": { "type": "number" },
+        "totalAdsPublished": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "role", "createdAt"]
+    },
+    "AdminRecord": {
+      "title": "AdminRecord",
+      "description": "Trusted admin authorization document for privileged network operations",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string", "maxLength": 256 },
+        "role": { "type": "string", "maxLength": 32 },
+        "grantedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["email", "role"]
+    },
+    "ConnectedInstance": {
+      "title": "ConnectedInstance",
+      "description": "WhatsApp connected instance participating in the ad network",
+      "type": "object",
+      "properties": {
+        "instanceId": { "type": "string", "maxLength": 128 },
+        "ownerUid": { "type": "string", "maxLength": 128 },
+        "ownerEmail": { "type": "string", "maxLength": 256 },
+        "phone": { "type": "string", "maxLength": 32 },
+        "name": { "type": "string", "maxLength": 128 },
+        "status": { "type": "string", "maxLength": 32 },
+        "groupsCount": { "type": "number" },
+        "pooledGroupsCount": { "type": "number" },
+        "totalAudienceReach": { "type": "number" },
+        "autoAdPoolEnabled": { "type": "boolean" },
+        "lastActive": { "type": "string", "format": "date-time" }
+      },
+      "required": ["instanceId", "ownerUid", "phone", "status"]
+    },
+    "PooledGroup": {
+      "title": "PooledGroup",
+      "description": "Public WhatsApp group opted into automated ad campaign distribution",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "instanceId": { "type": "string", "maxLength": 128 },
+        "ownerUid": { "type": "string", "maxLength": 128 },
+        "ownerEmail": { "type": "string", "maxLength": 256 },
+        "subject": { "type": "string", "maxLength": 256 },
+        "participantsCount": { "type": "number" },
+        "isBotAdmin": { "type": "boolean" },
+        "isOpenForMessages": { "type": "boolean" },
+        "isEnabled": { "type": "boolean" },
+        "category": { "type": "string", "maxLength": 64 },
+        "tags": { "type": "array" },
+        "addedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "instanceId", "ownerUid", "subject", "isEnabled"]
+    },
+    "AdvertCampaign": {
+      "title": "AdvertCampaign",
+      "description": "General advertising campaign submitted for network distribution",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "creatorUid": { "type": "string", "maxLength": 128 },
+        "creatorEmail": { "type": "string", "maxLength": 256 },
+        "creatorName": { "type": "string", "maxLength": 128 },
+        "title": { "type": "string", "maxLength": 256 },
+        "advertContent": { "type": "string", "maxLength": 5000 },
+        "linkUrl": { "type": "string", "maxLength": 1024 },
+        "mediaUrl": { "type": "string", "maxLength": 1024 },
+        "musicUrl": { "type": "string", "maxLength": 1024 },
+        "category": { "type": "string", "maxLength": 64 },
+        "status": { "type": "string", "enum": ["pending", "approved", "active", "completed", "rejected"], "maxLength": 32 },
+        "budget": { "type": "number" },
+        "targetReach": { "type": "number" },
+        "deliveredGroupsCount": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "approvedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "creatorUid", "title", "advertContent", "status", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "User profiles and promoter account state"
+    },
+    "/admins/{adminId}": {
+      "schema": "AdminRecord",
+      "description": "Admin authorization table containing bethelgoodgift3@gmail.com"
+    },
+    "/instances/{instanceId}": {
+      "schema": "ConnectedInstance",
+      "description": "Live connected WhatsApp accounts synced to cloud"
+    },
+    "/pooled_groups/{groupId}": {
+      "schema": "PooledGroup",
+      "description": "Groups contributed to the public automated ad network"
+    },
+    "/adverts/{advertId}": {
+      "schema": "AdvertCampaign",
+      "description": "Public and business advert campaigns for automated distribution"
+    }
+  }
+}

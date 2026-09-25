@@ -17,16 +17,24 @@ import {
   Radio,
   Sparkles,
   Download,
-  ShieldCheck
+  ShieldCheck,
+  Globe2,
+  Crown,
+  LogIn
 } from 'lucide-react';
+import { User } from 'firebase/auth';
 import { EngineStatusResponse } from '../types';
+import { isUserAdmin, ADMIN_EMAIL } from '../lib/firebase';
 
-export type NavTabId = 'connect' | 'api-keys' | 'groups' | 'campaign' | 'broadcast' | 'visibility' | 'ai' | 'logs' | 'deploy';
+export type NavTabId = 'landing' | 'ad-network' | 'connect' | 'api-keys' | 'groups' | 'campaign' | 'broadcast' | 'visibility' | 'ai' | 'logs' | 'deploy';
 
 interface SidebarProps {
   activeTab: NavTabId;
   setActiveTab: (tab: NavTabId) => void;
   statusData: EngineStatusResponse | null;
+  currentUser: User | null;
+  onGoogleLogin: () => void;
+  onGoogleLogout: () => void;
   isOpen: boolean;
   onClose: () => void;
   onLogout: () => void;
@@ -41,6 +49,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
   activeTab,
   setActiveTab,
   statusData,
+  currentUser,
+  onGoogleLogin,
+  onGoogleLogout,
   isOpen,
   onClose,
   onLogout,
@@ -52,6 +63,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
 }) => {
   const isConnected = statusData?.status === 'connected';
   const isConnecting = statusData?.status === 'connecting';
+  const isAdmin = isUserAdmin(currentUser);
+
   const stats = statusData?.stats || {
     statusesViewed: 0,
     reactionsSent: 0,
@@ -62,6 +75,22 @@ export const Sidebar: React.FC<SidebarProps> = ({
   };
 
   const navItems = [
+    { 
+      id: 'landing' as NavTabId, 
+      label: 'Home & Ad Network', 
+      icon: Sparkles, 
+      desc: 'Public landing & viral promos',
+      badge: 'PROMO',
+      badgeColor: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
+    },
+    { 
+      id: 'ad-network' as NavTabId, 
+      label: 'Community Ad Pool', 
+      icon: Globe2, 
+      desc: 'Automated group ads & pool',
+      badge: 'FIREBASE',
+      badgeColor: 'bg-amber-500/20 text-amber-400 border-amber-500/30'
+    },
     { id: 'connect' as NavTabId, label: 'Connect Account', icon: Link2, desc: 'Pair via QR or 8-digit code' },
     { 
       id: 'api-keys' as NavTabId, 
@@ -71,12 +100,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
       badge: 'REST API',
       badgeColor: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
     },
-    { id: 'groups' as NavTabId, label: 'Group Manager', icon: Users, desc: 'Search, filter & export groups' },
+    { id: 'groups' as NavTabId, label: 'Group Manager', icon: Users, desc: 'Search, tag & export VCF' },
     { 
       id: 'campaign' as NavTabId, 
       label: 'Campaign Engine', 
       icon: Rocket, 
-      desc: 'Automated multi-group sender',
+      desc: 'Multi-group & tag broadcast',
       badge: statusData?.campaign?.status === 'running' ? 'Active' : undefined,
       badgeColor: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30 animate-pulse'
     },
@@ -129,13 +158,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
             <div>
               <div className="flex items-center gap-1.5">
-                <span className="text-sm font-bold tracking-tight text-white">WhatsApp Engine</span>
+                <span className="text-sm font-bold tracking-tight text-white">WhatsApp Ad Net</span>
                 <span className="text-[10px] px-1.5 py-0.2 rounded bg-emerald-500/10 text-emerald-400 font-mono font-semibold border border-emerald-500/20">
                   PRO
                 </span>
               </div>
               <p className="text-[11px] text-slate-400 truncate max-w-[150px]">
-                {isConnected ? `+${statusData?.phone || 'Online'}` : 'Mobile Automation App'}
+                {isConnected ? `+${statusData?.phone || 'Online'}` : 'Promoters & Ads'}
               </p>
             </div>
           </div>
@@ -148,6 +177,53 @@ export const Sidebar: React.FC<SidebarProps> = ({
           >
             <X className="w-5 h-5" />
           </button>
+        </div>
+
+        {/* User / Firebase Profile Bar */}
+        <div className="px-4 py-2.5 bg-[#0b141a] border-b border-[#202c33] flex items-center justify-between">
+          {currentUser ? (
+            <div className="flex items-center justify-between w-full">
+              <div className="flex items-center gap-2 truncate">
+                {currentUser.photoURL ? (
+                  <img src={currentUser.photoURL} alt="User" className="w-6 h-6 rounded-full border border-emerald-500/40" />
+                ) : (
+                  <div className="w-6 h-6 rounded-full bg-emerald-600 text-white font-bold text-[10px] flex items-center justify-center">
+                    {currentUser.email?.[0].toUpperCase()}
+                  </div>
+                )}
+                <div className="truncate">
+                  <div className="flex items-center gap-1">
+                    <p className="text-xs font-semibold text-white truncate max-w-[110px]">{currentUser.displayName || currentUser.email?.split('@')[0]}</p>
+                    {isAdmin && (
+                      <span className="text-[9px] font-bold px-1 py-0.2 rounded bg-amber-500/20 text-amber-400 border border-amber-500/30 flex items-center gap-0.5">
+                        <Crown className="w-2.5 h-2.5" /> Admin
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-[10px] text-slate-500 truncate max-w-[130px]">{currentUser.email}</p>
+                </div>
+              </div>
+
+              <button
+                onClick={onGoogleLogout}
+                className="text-[10px] text-slate-400 hover:text-rose-400 px-2 py-1 rounded bg-[#111b21] hover:bg-[#202c33] transition-all cursor-pointer"
+                title="Log out from Firebase"
+              >
+                Sign Out
+              </button>
+            </div>
+          ) : (
+            <div className="flex items-center justify-between w-full">
+              <span className="text-xs text-slate-400">Firebase Cloud Sync</span>
+              <button
+                onClick={onGoogleLogin}
+                className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold transition-all cursor-pointer shadow"
+              >
+                <LogIn className="w-3 h-3" />
+                <span>Google Sign In</span>
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Live Status Card */}
@@ -168,7 +244,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
             <div className="flex items-center gap-1 text-[11px] text-slate-400 font-mono">
               <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-              <span>Keep-Alive 24/7</span>
+              <span>Ad Net 24/7</span>
             </div>
           </div>
 
@@ -196,7 +272,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         {/* Navigation Items (Scrollable) */}
         <nav className="flex-1 overflow-y-auto px-3 py-3 space-y-1 scrollbar-thin scrollbar-thumb-slate-800">
           <div className="px-2 py-1 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
-            Main Navigation
+            Network & Features
           </div>
 
           {navItems.map((item) => {
@@ -206,7 +282,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <button
                 key={item.id}
                 onClick={() => handleSelectTab(item.id)}
-                className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-left text-xs font-medium transition-all group cursor-pointer ${
+                className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-left text-xs font-medium transition-all group cursor-pointer ${
                   isActive
                     ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 shadow-sm shadow-emerald-950/40 font-semibold'
                     : 'text-slate-300 hover:text-white hover:bg-[#1f2c34]/70 border border-transparent'
@@ -273,15 +349,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
               className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 hover:text-rose-300 border border-rose-500/20 text-xs font-semibold transition-all cursor-pointer disabled:opacity-50"
             >
               <LogOut className="w-3.5 h-3.5" />
-              <span>{isLoggingOut ? 'Disconnecting...' : 'Disconnect Account'}</span>
+              <span>{isLoggingOut ? 'Disconnecting...' : 'Disconnect WhatsApp'}</span>
             </button>
           )}
 
           <div className="flex items-center justify-between text-[10px] text-slate-400 px-1 pt-1 font-mono">
-            <span>v1.0.0 PWA</span>
+            <span>Firebase Synced</span>
             <span className="flex items-center gap-1 text-emerald-400">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-              Port 3000
+              Europe-West2
             </span>
           </div>
         </div>

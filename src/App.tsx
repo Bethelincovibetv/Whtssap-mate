@@ -1,6 +1,9 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { User, onAuthStateChanged } from 'firebase/auth';
 import { Header } from './components/Header';
 import { Sidebar, NavTabId } from './components/Sidebar';
+import { LandingPage } from './components/LandingPage';
+import { AdNetworkTab } from './components/AdNetworkTab';
 import { ConnectTab } from './components/ConnectTab';
 import { ApiKeysTab } from './components/ApiKeysTab';
 import { GroupManagerTab } from './components/GroupManagerTab';
@@ -11,15 +14,19 @@ import { AiResponderTab } from './components/AiResponderTab';
 import { LiveLogsTab } from './components/LiveLogsTab';
 import { RenderDeployTab } from './components/RenderDeployTab';
 import { PwaInstallModal } from './components/PwaInstallModal';
+import { CreateAdvertModal } from './components/CreateAdvertModal';
 import { usePwaInstall } from './hooks/usePwaInstall';
-import { EngineStatusResponse, ActivityLog } from './types';
+import { EngineStatusResponse, ActivityLog, AdvertCampaign } from './types';
+import { auth, loginWithGoogle, logoutUser, testFirestoreConnection } from './lib/firebase';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<NavTabId>('connect');
+  const [activeTab, setActiveTab] = useState<NavTabId>('landing');
   const [statusData, setStatusData] = useState<EngineStatusResponse | null>(null);
   const [logs, setLogs] = useState<ActivityLog[]>([]);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [showCreateAdvertModal, setShowCreateAdvertModal] = useState(false);
   const [campaignPreload, setCampaignPreload] = useState<{
     mode?: 'groups' | 'tagged_contacts';
     targetGroupJids?: string[];
@@ -33,6 +40,35 @@ export default function App() {
     setShowIOSModal,
     triggerInstall
   } = usePwaInstall();
+
+  // Test Firestore Connection on Boot
+  useEffect(() => {
+    testFirestoreConnection();
+  }, []);
+
+  // Firebase Auth Listener
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      setCurrentUser(user);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  const handleGoogleLogin = async () => {
+    try {
+      await loginWithGoogle();
+    } catch (e) {
+      console.error('Login error:', e);
+    }
+  };
+
+  const handleGoogleLogout = async () => {
+    try {
+      await logoutUser();
+    } catch (e) {
+      console.error('Logout error:', e);
+    }
+  };
 
   const fetchStatus = useCallback(async () => {
     try {
@@ -197,6 +233,9 @@ export default function App() {
         activeTab={activeTab}
         setActiveTab={setActiveTab}
         statusData={statusData}
+        currentUser={currentUser}
+        onGoogleLogin={handleGoogleLogin}
+        onGoogleLogout={handleGoogleLogout}
         isOpen={isSidebarOpen}
         onClose={() => setIsSidebarOpen(false)}
         onLogout={handleLogout}
@@ -214,6 +253,8 @@ export default function App() {
         <Header
           statusData={statusData}
           activeTab={activeTab}
+          currentUser={currentUser}
+          onGoogleLogin={handleGoogleLogin}
           onOpenSidebar={() => setIsSidebarOpen(true)}
           onRefresh={fetchStatus}
           onInstallClick={triggerInstall}
@@ -223,6 +264,28 @@ export default function App() {
 
         {/* Main Content Area */}
         <main className="flex-1 max-w-7xl w-full mx-auto px-3 sm:px-6 lg:px-8 py-5">
+          {activeTab === 'landing' && (
+            <LandingPage
+              currentUser={currentUser}
+              onLogin={handleGoogleLogin}
+              onGetStarted={() => setActiveTab('connect')}
+              onCreateAdvert={() => setShowCreateAdvertModal(true)}
+            />
+          )}
+
+          {activeTab === 'ad-network' && (
+            <AdNetworkTab
+              statusData={statusData}
+              currentUser={currentUser}
+              onRefresh={fetchStatus}
+              onOpenConnect={() => setActiveTab('connect')}
+              onOpenCampaign={(preload) => {
+                if (preload) setCampaignPreload(preload);
+                setActiveTab('campaign');
+              }}
+            />
+          )}
+
           {activeTab === 'connect' && (
             <ConnectTab
               statusData={statusData}
@@ -293,11 +356,11 @@ export default function App() {
         {/* Footer */}
         <footer className="border-t border-[#202c33] bg-[#0b141a] py-5 px-4 text-center text-xs text-slate-500">
           <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-3">
-            <p>© 2026 WhatsApp Growth & Automation Engine • PWA & REST API Ready</p>
+            <p>© 2026 WhatsApp Promoters & Ad Network • Cloud Firebase Firestore Synced</p>
             <div className="flex items-center gap-3 text-slate-400 text-[11px]">
-              <span className="text-emerald-400">● 24/7 Keep-Alive</span>
+              <span className="text-emerald-400">● 24/7 Live Engine</span>
               <span>•</span>
-              <span>REST API v1</span>
+              <span>Firebase Cloud DB</span>
               <span>•</span>
               <span>Baileys MultiAuth</span>
               <span>•</span>
@@ -307,6 +370,16 @@ export default function App() {
         </footer>
 
       </div>
+
+      {/* Global Create Advert Modal */}
+      <CreateAdvertModal
+        isOpen={showCreateAdvertModal}
+        onClose={() => setShowCreateAdvertModal(false)}
+        currentUser={currentUser}
+        onSuccess={(newAdv) => {
+          setActiveTab('ad-network');
+        }}
+      />
 
       {/* iOS PWA Instructions Modal */}
       <PwaInstallModal

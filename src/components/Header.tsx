@@ -12,14 +12,22 @@ import {
   Eye,
   Bot,
   Terminal,
-  CloudUpload
+  CloudUpload,
+  Sparkles,
+  Globe2,
+  LogIn,
+  Crown
 } from 'lucide-react';
+import { User } from 'firebase/auth';
 import { EngineStatusResponse } from '../types';
 import { NavTabId } from './Sidebar';
+import { isUserAdmin } from '../lib/firebase';
 
 interface HeaderProps {
   statusData: EngineStatusResponse | null;
   activeTab: NavTabId;
+  currentUser: User | null;
+  onGoogleLogin: () => void;
   onOpenSidebar: () => void;
   onRefresh: () => void;
   onInstallClick?: () => void;
@@ -28,9 +36,11 @@ interface HeaderProps {
 }
 
 const TAB_TITLES: Record<NavTabId, { title: string; subtitle: string; icon: any }> = {
+  landing: { title: 'WhatsApp Promoters & Ad Network', subtitle: 'Broadcast viral ads across thousands of pooled groups', icon: Sparkles },
+  'ad-network': { title: 'Community Ad Network Pool', subtitle: 'Automated campaign distribution & group pool', icon: Globe2 },
   connect: { title: 'Connect Account', subtitle: 'Pair via QR code or 8-digit code', icon: Link2 },
   'api-keys': { title: 'Developer API & Keys', subtitle: 'Connect external apps, websites & webhooks', icon: KeyRound },
-  groups: { title: 'Group Manager', subtitle: 'Manage joined WhatsApp groups & members', icon: Users },
+  groups: { title: 'Group Manager', subtitle: 'Manage joined WhatsApp groups, tagging & VCF', icon: Users },
   campaign: { title: 'Campaign Engine', subtitle: 'Automated multi-group message dispatch', icon: Rocket },
   broadcast: { title: 'Story Broadcast', subtitle: 'Publish status updates to all contacts', icon: Send },
   visibility: { title: 'Story Viewer & Reacts', subtitle: 'Auto-view contact stories & send reactions', icon: Eye },
@@ -42,6 +52,8 @@ const TAB_TITLES: Record<NavTabId, { title: string; subtitle: string; icon: any 
 export const Header: React.FC<HeaderProps> = ({ 
   statusData, 
   activeTab,
+  currentUser,
+  onGoogleLogin,
   onOpenSidebar,
   onRefresh,
   onInstallClick,
@@ -50,8 +62,9 @@ export const Header: React.FC<HeaderProps> = ({
 }) => {
   const isConnected = statusData?.status === 'connected';
   const isConnecting = statusData?.status === 'connecting';
-  const currentTab = TAB_TITLES[activeTab] || TAB_TITLES.connect;
+  const currentTab = TAB_TITLES[activeTab] || TAB_TITLES.landing;
   const CurrentIcon = currentTab.icon;
+  const isAdmin = isUserAdmin(currentUser);
 
   return (
     <header className="border-b border-[#202c33] bg-[#111b21]/90 backdrop-blur-md sticky top-0 z-30 px-3 sm:px-6 py-3">
@@ -77,9 +90,9 @@ export const Header: React.FC<HeaderProps> = ({
             <div>
               <h1 className="text-sm sm:text-base font-bold text-white tracking-tight leading-tight flex items-center gap-2">
                 <span>{currentTab.title}</span>
-                {activeTab === 'campaign' && statusData?.campaign?.status === 'running' && (
-                  <span className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 font-bold uppercase animate-pulse">
-                    Running
+                {isAdmin && (
+                  <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 font-bold uppercase flex items-center gap-1">
+                    <Crown className="w-3 h-3" /> Admin
                   </span>
                 )}
               </h1>
@@ -90,9 +103,33 @@ export const Header: React.FC<HeaderProps> = ({
           </div>
         </div>
 
-        {/* Right: Quick Install PWA, Connection Status, Refresh */}
+        {/* Right: User Auth, PWA Install, Connection Status, Refresh */}
         <div className="flex items-center gap-2 sm:gap-3">
           
+          {/* Google Auth Status / Login */}
+          {!currentUser ? (
+            <button
+              onClick={onGoogleLogin}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-500 hover:from-emerald-500 hover:to-teal-400 text-white text-xs font-bold transition-all shadow cursor-pointer"
+            >
+              <LogIn className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Sign In</span>
+            </button>
+          ) : (
+            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-[#0b141a] border border-[#202c33]">
+              {currentUser.photoURL ? (
+                <img src={currentUser.photoURL} alt="Avatar" className="w-5 h-5 rounded-full border border-emerald-500/30" />
+              ) : (
+                <div className="w-5 h-5 rounded-full bg-emerald-600 text-white text-[9px] font-bold flex items-center justify-center">
+                  {currentUser.email?.[0].toUpperCase()}
+                </div>
+              )}
+              <span className="text-xs text-white font-medium hidden md:inline truncate max-w-[100px]">
+                {currentUser.displayName || currentUser.email?.split('@')[0]}
+              </span>
+            </div>
+          )}
+
           {/* PWA Install Button */}
           {onInstallClick && (
             <button

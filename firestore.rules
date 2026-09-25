@@ -1,0 +1,122 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Default Deny Catch-All
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Global Helpers
+    function isValidId(id) { 
+      return id is string && id.size() > 0 && id.size() <= 128; 
+    }
+
+    function incoming() { 
+      return request.resource.data; 
+    }
+
+    function existing() { 
+      return resource.data; 
+    }
+
+    function isSignedIn() { 
+      return request.auth != null && request.auth.uid != null; 
+    }
+
+    function isOwner(userId) { 
+      return isSignedIn() && request.auth.uid == userId; 
+    }
+
+    function isAdmin() { 
+      return isSignedIn() && (
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        request.auth.token.email == 'bethelgoodgift3@gmail.com'
+      ); 
+    }
+
+    // Entity Validators
+    function isValidUserProfile(data) {
+      return data.keys().hasAll(['uid', 'email', 'role', 'createdAt']) &&
+        data.keys().hasOnly(['uid', 'email', 'displayName', 'photoURL', 'role', 'isAdmin', 'totalEarned', 'totalAdsPublished', 'createdAt', 'updatedAt']) &&
+        data.uid is string && data.uid.size() <= 128 &&
+        data.email is string && data.email.size() <= 256 &&
+        data.role in ['admin', 'promoter', 'advertiser', 'user'];
+    }
+
+    function isValidConnectedInstance(data) {
+      return data.keys().hasAll(['instanceId', 'ownerUid', 'phone', 'status']) &&
+        data.instanceId is string && data.instanceId.size() <= 128 &&
+        data.ownerUid is string && data.ownerUid.size() <= 128 &&
+        data.phone is string && data.phone.size() <= 32 &&
+        data.status is string && data.status.size() <= 32;
+    }
+
+    function isValidPooledGroup(data) {
+      return data.keys().hasAll(['id', 'instanceId', 'ownerUid', 'subject', 'isEnabled']) &&
+        data.id is string && data.id.size() <= 128 &&
+        data.instanceId is string && data.instanceId.size() <= 128 &&
+        data.ownerUid is string && data.ownerUid.size() <= 128 &&
+        data.subject is string && data.subject.size() <= 256 &&
+        data.isEnabled is bool;
+    }
+
+    function isValidAdvert(data) {
+      return data.keys().hasAll(['id', 'creatorUid', 'title', 'advertContent', 'status', 'createdAt']) &&
+        data.id is string && data.id.size() <= 128 &&
+        data.creatorUid is string && data.creatorUid.size() <= 128 &&
+        data.title is string && data.title.size() <= 256 &&
+        data.advertContent is string && data.advertContent.size() <= 5000 &&
+        data.status in ['pending', 'approved', 'active', 'completed', 'rejected'];
+    }
+
+    // 1. Users Collection
+    match /users/{userId} {
+      allow get: if isSignedIn() && (isOwner(userId) || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isSignedIn() && isOwner(userId) && isValidUserProfile(incoming()) && incoming().uid == request.auth.uid;
+      allow update: if isSignedIn() && (
+        isAdmin() || 
+        (isOwner(userId) && isValidUserProfile(incoming()) && incoming().uid == existing().uid)
+      );
+      allow delete: if isAdmin();
+    }
+
+    // 2. Admins Collection
+    match /admins/{adminId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    // 3. Connected Instances (WhatsApp sessions synced to cloud)
+    match /instances/{instanceId} {
+      allow read: if isSignedIn() && (existing().ownerUid == request.auth.uid || isAdmin());
+      allow list: if isSignedIn();
+      allow create: if isSignedIn() && isValidConnectedInstance(incoming()) && (incoming().ownerUid == request.auth.uid || isAdmin());
+      allow update: if isSignedIn() && isValidConnectedInstance(incoming()) && (existing().ownerUid == request.auth.uid || isAdmin());
+      allow delete: if isSignedIn() && (existing().ownerUid == request.auth.uid || isAdmin());
+    }
+
+    // 4. Pooled Groups (Public WhatsApp Groups in Ad Network)
+    match /pooled_groups/{groupId} {
+      allow read: if isSignedIn();
+      allow list: if isSignedIn();
+      allow create: if isSignedIn() && isValidPooledGroup(incoming()) && (incoming().ownerUid == request.auth.uid || isAdmin());
+      allow update: if isSignedIn() && isValidPooledGroup(incoming()) && (existing().ownerUid == request.auth.uid || isAdmin());
+      allow delete: if isSignedIn() && (existing().ownerUid == request.auth.uid || isAdmin());
+    }
+
+    // 5. Adverts (Community Adverts & Business Campaigns)
+    match /adverts/{advertId} {
+      allow read: if true; // Public advert links can be viewed
+      allow list: if isSignedIn();
+      allow create: if isSignedIn() && isValidAdvert(incoming()) && (incoming().creatorUid == request.auth.uid || isAdmin());
+      allow update: if isSignedIn() && isValidAdvert(incoming()) && (
+        isAdmin() || 
+        (existing().creatorUid == request.auth.uid && incoming().creatorUid == existing().creatorUid)
+      );
+      allow delete: if isSignedIn() && (existing().creatorUid == request.auth.uid || isAdmin());
+    }
+
+  }
+}
