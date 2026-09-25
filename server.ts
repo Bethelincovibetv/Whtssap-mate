@@ -135,6 +135,21 @@ function broadcastStateUpdate() {
   });
 }
 
+function extractMessageText(message: any): string {
+  if (!message) return '';
+  return (
+    message.conversation ||
+    message.extendedTextMessage?.text ||
+    message.imageMessage?.caption ||
+    message.videoMessage?.caption ||
+    message.documentMessage?.caption ||
+    message.buttonsResponseMessage?.selectedDisplayText ||
+    message.templateButtonReplyMessage?.selectedDisplayText ||
+    message.listResponseMessage?.title ||
+    ''
+  );
+}
+
 const AUTH_DIR = path.join(__dirname, 'session_auth');
 
 async function initWhatsApp(forceFresh = false) {
@@ -276,7 +291,7 @@ async function initWhatsApp(forceFresh = false) {
                   if (sock) {
                     await sock.readMessages([msg.key]);
                     stats.statusesViewed++;
-                    addLog(`👁️ Viewed status story from ${senderName} (+${senderPhone})`, 'event');
+                    addLog(`👁️ Viewed story from ${senderName} (+${senderPhone})`, 'event');
                     broadcastStateUpdate();
                   }
                 } catch (e: any) {
@@ -297,12 +312,17 @@ async function initWhatsApp(forceFresh = false) {
               setTimeout(async () => {
                 try {
                   if (sock) {
-                    await sock.sendMessage(remoteJid, {
-                      react: {
-                        text: randomEmoji,
-                        key: msg.key
+                    try {
+                      await sock.sendMessage(remoteJid, {
+                        react: { text: randomEmoji, key: msg.key }
+                      });
+                    } catch (e1) {
+                      if (msg.key.participant) {
+                        await sock.sendMessage(msg.key.participant, {
+                          react: { text: randomEmoji, key: msg.key }
+                        });
                       }
-                    });
+                    }
                     stats.reactionsSent++;
                     addLog(`🔥 Auto-reacted ${randomEmoji} to story from ${senderName}`, 'event');
                     broadcastStateUpdate();
@@ -319,9 +339,7 @@ async function initWhatsApp(forceFresh = false) {
 
         // 2. Direct 1-on-1 Messages (AI Auto-Responder with Gemini)
         if (remoteJid && remoteJid.endsWith('@s.whatsapp.net') && !fromMe && config.aiResponder) {
-          const text = msg.message?.conversation || 
-                       msg.message?.extendedTextMessage?.text || 
-                       msg.message?.imageMessage?.caption || '';
+          const text = extractMessageText(msg.message);
 
           if (!text || text.startsWith('/skip') || text.startsWith('!stop')) continue;
 
@@ -342,17 +360,22 @@ async function initWhatsApp(forceFresh = false) {
                 }
               });
 
-              const userContext = `WhatsApp Contact: ${senderName} (Phone: +${senderPhone})\nReceived Message: "${text}"`;
+              let replyText = '';
+              const prompt = `A customer named "${senderName}" (+${senderPhone}) sent the following message on WhatsApp: "${text}". Reply to them following these business instructions:\n\n${config.systemPrompt}\n\nKeep the reply natural, friendly, formatted for WhatsApp (use *bold* where appropriate), and concise.`;
 
-              const response = await ai.models.generateContent({
-                model: 'gemini-3.8-flash',
-                contents: userContext,
-                config: {
-                  systemInstruction: config.systemPrompt
-                }
-              });
-
-              const replyText = response?.text?.trim();
+              try {
+                const response = await ai.models.generateContent({
+                  model: 'gemini-2.5-flash',
+                  contents: prompt
+                });
+                replyText = response?.text?.trim() || '';
+              } catch (e) {
+                const response = await ai.models.generateContent({
+                  model: 'gemini-3.8-flash',
+                  contents: prompt
+                });
+                replyText = response?.text?.trim() || '';
+              }
 
               if (replyText && sock) {
                 await sock.sendPresenceUpdate('composing', remoteJid);
@@ -626,16 +649,29 @@ app.post('/api/ai/test', async (req: Request, res: Response) => {
       }
     });
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
-      contents: message || 'Hi! What are your prices and services?',
-      config: {
-        systemInstruction: systemPrompt || config.systemPrompt
-      }
-    });
+    let reply = '';
+    try {
+      const response = await ai.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: message || 'Hi! What are your prices and services?',
+        config: {
+          systemInstruction: systemPrompt || config.systemPrompt
+        }
+      });
+      reply = response.text?.trim() || '';
+    } catch (e) {
+      const response = await ai.models.generateContent({
+        model: 'gemini-3.8-flash',
+        contents: message || 'Hi! What are your prices and services?',
+        config: {
+          systemInstruction: systemPrompt || config.systemPrompt
+        }
+      });
+      reply = response.text?.trim() || '';
+    }
 
     res.json({
-      reply: response.text?.trim() || 'No response generated.'
+      reply: reply || 'No response generated.'
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message });

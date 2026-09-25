@@ -123,6 +123,21 @@ function broadcastStateUpdate() {
   });
 }
 
+function extractMessageText(message) {
+  if (!message) return '';
+  return (
+    message.conversation ||
+    message.extendedTextMessage?.text ||
+    message.imageMessage?.caption ||
+    message.videoMessage?.caption ||
+    message.documentMessage?.caption ||
+    message.buttonsResponseMessage?.selectedDisplayText ||
+    message.templateButtonReplyMessage?.selectedDisplayText ||
+    message.listResponseMessage?.title ||
+    ''
+  );
+}
+
 const AUTH_DIR = path.join(__dirname, 'session_auth');
 
 async function initWhatsApp(forceFresh = false) {
@@ -131,7 +146,7 @@ async function initWhatsApp(forceFresh = false) {
 
   try {
     if (forceFresh) {
-      addLog('Clearing previous session files for fresh pairing...', 'info');
+      addLog('Clearing session files for fresh pairing...', 'info');
       try {
         if (sock) {
           sock.ev.removeAllListeners('connection.update');
@@ -153,15 +168,14 @@ async function initWhatsApp(forceFresh = false) {
     }
 
     const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
-    const { version, isLatest } = await fetchLatestBaileysVersion().catch(() => ({ version: [2, 3000, 1015901307], isLatest: true }));
+    const { version } = await fetchLatestBaileysVersion().catch(() => ({ version: [2, 3000, 1015901307], isLatest: true }));
     
     addLog(`Initializing Baileys WA Socket v${version.join('.')}...`, 'info');
     connectionStatus = 'connecting';
     connectionPhase = 'initializing';
     broadcastStateUpdate();
 
-    // Standard recognized browser signature for reliable pairing
-    const browserConfig = Browsers ? Browsers.ubuntu('Chrome') : ['Ubuntu', 'Chrome', '20.0.04'];
+    const browserTuple = ['Ubuntu', 'Chrome', '20.0.04'];
 
     sock = makeWASocket({
       version,
@@ -171,7 +185,7 @@ async function initWhatsApp(forceFresh = false) {
         creds: state.creds,
         keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'silent' }))
       },
-      browser: browserConfig,
+      browser: browserTuple,
       markOnlineOnConnect: true,
       generateHighQualityLinkPreview: true,
       syncFullHistory: false,
@@ -234,7 +248,6 @@ async function initWhatsApp(forceFresh = false) {
             initWhatsApp(true);
           }, 2000);
         } else if (statusCode === 515 || statusCode === 428 || shouldReconnect) {
-          // 515 = stream restart required during key exchange (normal during initial link)
           addLog(`Reconnecting socket (Code ${statusCode || 'reconnect'})...`, 'info');
           setTimeout(() => {
             isInitializing = false;
@@ -256,8 +269,9 @@ async function initWhatsApp(forceFresh = false) {
         if (remoteJid === 'status@broadcast') {
           const participant = msg.key?.participant || 'Contact';
           const senderName = msg.pushName || participant.split('@')[0];
+          const senderPhone = participant.split('@')[0];
 
-          // Auto-View Status
+          // Auto-View Status (marks contact story as viewed)
           if (config.autoView && sock) {
             try {
               const delay = (config.viewDelaySeconds || 2) * 1000 + Math.random() * 1000;
@@ -266,7 +280,7 @@ async function initWhatsApp(forceFresh = false) {
                   if (sock) {
                     await sock.readMessages([msg.key]);
                     stats.statusesViewed++;
-                    addLog(`👁️ Auto-viewed status from ${senderName} (+${participant.split('@')[0]})`, 'event');
+                    addLog(`👁️ Viewed story from ${senderName} (+${senderPhone})`, 'event');
                     broadcastStateUpdate();
                   }
                 } catch (err) {
@@ -285,14 +299,20 @@ async function initWhatsApp(forceFresh = false) {
               setTimeout(async () => {
                 try {
                   if (sock) {
-                    await sock.sendMessage(remoteJid, {
-                      react: {
-                        text: randomEmoji,
-                        key: msg.key
+                    try {
+                      await sock.sendMessage(remoteJid, {
+                        react: { text: randomEmoji, key: msg.key }
+                      });
+                    } catch (e1) {
+                      // Fallback with participant JID if status@broadcast direct reaction fails
+                      if (msg.key.participant) {
+                        await sock.sendMessage(msg.key.participant, {
+                          react: { text: randomEmoji, key: msg.key }
+                        });
                       }
-                    });
+                    }
                     stats.reactionsSent++;
-                    addLog(`🔥 Auto-reacted ${randomEmoji} to status from ${senderName}`, 'event');
+                    addLog(`🔥 Auto-reacted ${randomEmoji} to story from ${senderName}`, 'event');
                     broadcastStateUpdate();
                   }
                 } catch (reactErr) {
@@ -305,13 +325,11 @@ async function initWhatsApp(forceFresh = false) {
           }
         }
 
-        // 2. Direct 1-on-1 Messages (AI Auto-Responder)
+        // 2. Direct 1-on-1 Messages (AI Auto-Responder with Gemini)
         if (remoteJid && remoteJid.endsWith('@s.whatsapp.net') && !fromMe && config.aiResponder) {
-          const text = msg.message?.conversation || 
-                       msg.message?.extendedTextMessage?.text || 
-                       msg.message?.imageMessage?.caption || '';
+          const text = extractMessageText(msg.message);
 
-          if (!text || text.startsWith('/skip')) continue;
+          if (!text || text.startsWith('/skip') || text.startsWith('!stop')) continue;
 
           const senderName = msg.pushName || 'Customer';
           const senderPhone = remoteJid.split('@')[0];
@@ -331,14 +349,23 @@ async function initWhatsApp(forceFresh = false) {
                 }
               });
 
+              let replyText = '';
               const prompt = `A customer named "${senderName}" (+${senderPhone}) sent the following message on WhatsApp: "${text}". Reply to them following these business instructions:\n\n${config.systemPrompt}\n\nKeep the reply natural, friendly, formatted for WhatsApp (use *bold* where appropriate), and concise.`;
 
-              const response = await ai.models.generateContent({
-                model: 'gemini-3.8-flash',
-                contents: prompt
-              });
-
-              const replyText = response?.text?.trim();
+              try {
+                const response = await ai.models.generateContent({
+                  model: 'gemini-2.5-flash',
+                  contents: prompt
+                });
+                replyText = response?.text?.trim() || '';
+              } catch (modelErr) {
+                // Fallback to gemini-3.8-flash if model name varies
+                const response = await ai.models.generateContent({
+                  model: 'gemini-3.8-flash',
+                  contents: prompt
+                });
+                replyText = response?.text?.trim() || '';
+              }
 
               if (replyText && sock) {
                 await sock.sendPresenceUpdate('composing', remoteJid);
@@ -428,7 +455,6 @@ app.post('/api/pairing-code', async (req, res) => {
       return res.status(400).json({ error: 'WhatsApp is already connected! Click "Disconnect" first to link a new number.' });
     }
 
-    // Ensure socket is active and not dead
     if (!sock || !sock.ws || sock.ws.readyState === 3) {
       addLog('Reconnecting socket for pairing code request...', 'info');
       await initWhatsApp(false);
@@ -437,7 +463,6 @@ app.post('/api/pairing-code', async (req, res) => {
 
     addLog(`Requesting official 8-digit Pairing Code for +${cleanedNumber}...`);
     
-    // Request code from Baileys
     const code = await sock.requestPairingCode(cleanedNumber);
     const formattedCode = code?.match(/.{1,4}/g)?.join('-') || code;
 
@@ -500,7 +525,7 @@ app.post('/api/logout', async (req, res) => {
 // 6. Post Status Update (Story Broadcast)
 app.post('/api/status/post', async (req, res) => {
   try {
-    const { text, imageUrl } = req.body;
+    const { text, imageUrl, backgroundColor } = req.body;
 
     if (connectionStatus !== 'connected' || !sock) {
       return res.status(400).json({ error: 'WhatsApp is not connected. Link your device first.' });
@@ -522,7 +547,7 @@ app.post('/api/status/post', async (req, res) => {
     } else {
       await sock.sendMessage('status@broadcast', {
         text: text,
-        backgroundColor: '#075e54'
+        backgroundColor: backgroundColor || '#075e54'
       }, {
         statusJidList: []
       });
@@ -607,16 +632,29 @@ app.post('/api/ai/test', async (req, res) => {
       }
     });
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
-      contents: message || 'Hello, what services do you offer?',
-      config: {
-        systemInstruction: systemPrompt || config.systemPrompt
-      }
-    });
+    let reply = '';
+    try {
+      const response = await ai.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: message || 'Hello, what services do you offer?',
+        config: {
+          systemInstruction: systemPrompt || config.systemPrompt
+        }
+      });
+      reply = response.text?.trim() || '';
+    } catch (e) {
+      const response = await ai.models.generateContent({
+        model: 'gemini-3.8-flash',
+        contents: message || 'Hello, what services do you offer?',
+        config: {
+          systemInstruction: systemPrompt || config.systemPrompt
+        }
+      });
+      reply = response.text?.trim() || '';
+    }
 
     res.json({
-      reply: response.text?.trim() || 'No response generated.'
+      reply: reply || 'No response generated.'
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
