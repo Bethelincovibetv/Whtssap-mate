@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: whatsapp-growth-engine
+    env: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node server.js
+    envVars:
+      - key: PORT
+        value: 3000
+      - key: NODE_VERSION
+        value: 18.20.0
