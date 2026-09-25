@@ -3,10 +3,10 @@ services:
     name: whatsapp-growth-engine
     env: node
     plan: free
-    buildCommand: npm install
+    buildCommand: npm install && npm run build
     startCommand: node server.js
     envVars:
       - key: PORT
-        value: 3000
+        value: 10000
       - key: NODE_VERSION
-        value: 18.20.0
+        value: 20.18.0

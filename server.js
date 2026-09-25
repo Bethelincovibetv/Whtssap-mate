@@ -1,10 +1,4 @@
-import makeWASocket, {
-  DisconnectReason,
-  useMultiFileAuthState,
-  fetchLatestBaileysVersion,
-  makeCacheableSignalKeyStore,
-  Browsers
-} from '@whiskeysockets/baileys';
+import * as baileysPkg from '@whiskeysockets/baileys';
 import pino from 'pino';
 import QRCode from 'qrcode';
 import express from 'express';
@@ -16,6 +10,15 @@ import { fileURLToPath } from 'url';
 import { GoogleGenAI } from '@google/genai';
 
 dotenv.config();
+
+// Safe import resolver for Baileys ESM & CJS compatibility
+const makeWASocket = baileysPkg.default?.default || baileysPkg.default || baileysPkg.makeWASocket || baileysPkg;
+const {
+  DisconnectReason,
+  useMultiFileAuthState,
+  fetchLatestBaileysVersion,
+  makeCacheableSignalKeyStore
+} = baileysPkg;
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -33,7 +36,7 @@ const distDir = path.join(__dirname, 'dist');
 
 if (fs.existsSync(distDir)) {
   app.use(express.static(distDir));
-} else {
+} else if (fs.existsSync(publicDir)) {
   app.use(express.static(publicDir));
 }
 
@@ -45,7 +48,8 @@ let config = {
   reactionEmojis: ['🔥', '👏', '❤️', '🚀', '😍', '⚡'],
   aiResponder: true,
   systemPrompt: 'You are an intelligent, friendly AI assistant for WhatsApp. Help answer user questions, explain services, and qualify leads accurately and politely. Keep responses concise (under 3 sentences) unless asked for more details.',
-  geminiKey: process.env.GEMINI_API_KEY || ''
+  geminiKey: process.env.GEMINI_API_KEY || '',
+  viewDelaySeconds: 2
 };
 
 // Load saved config if exists
@@ -72,6 +76,8 @@ let qrCodeDataUrl = null;
 let activePhone = null;
 let activePushName = null;
 let recentLogs = [];
+let clientsSse = [];
+
 let stats = {
   statusesViewed: 0,
   reactionsSent: 0,
@@ -88,8 +94,29 @@ function addLog(message, type = 'info') {
     type
   };
   recentLogs.unshift(logItem);
-  if (recentLogs.length > 200) recentLogs.pop();
+  if (recentLogs.length > 300) recentLogs.pop();
   console.log(`[WA Engine] ${message}`);
+
+  const sseData = `data: ${JSON.stringify({ type: 'log', log: logItem, stats })}\n\n`;
+  clientsSse.forEach(client => {
+    try { client.write(sseData); } catch (e) {}
+  });
+}
+
+function broadcastStateUpdate() {
+  const sseData = `data: ${JSON.stringify({
+    type: 'state',
+    status: connectionStatus,
+    phone: activePhone,
+    name: activePushName,
+    hasQr: !!qrCodeDataUrl,
+    qr: qrCodeDataUrl,
+    stats,
+    config
+  })}\n\n`;
+  clientsSse.forEach(client => {
+    try { client.write(sseData); } catch (e) {}
+  });
 }
 
 const AUTH_DIR = path.join(__dirname, 'session_auth');
@@ -133,6 +160,7 @@ async function initWhatsApp(isRestart = false) {
           });
           connectionStatus = 'connecting';
           addLog('QR Code generated. Scan with WhatsApp or use 8-digit Pairing Code.', 'info');
+          broadcastStateUpdate();
         } catch (err) {
           console.error('Failed to generate QR code data URL', err);
         }
@@ -144,6 +172,7 @@ async function initWhatsApp(isRestart = false) {
         activePhone = sock.user?.id?.split(':')[0]?.split('@')[0] || sock.user?.id || 'Connected User';
         activePushName = sock.user?.name || sock.user?.notify || 'My WhatsApp';
         addLog(`Successfully connected as +${activePhone} (${activePushName})`, 'success');
+        broadcastStateUpdate();
       }
 
       if (connection === 'close') {
@@ -153,6 +182,7 @@ async function initWhatsApp(isRestart = false) {
         qrCodeDataUrl = null;
         
         addLog(`Connection closed: ${lastDisconnect?.error?.message || 'Code ' + statusCode}. Reconnect: ${shouldReconnect}`, 'warn');
+        broadcastStateUpdate();
 
         if (statusCode === DisconnectReason.loggedOut) {
           addLog('Session logged out by user. Cleaning session files...', 'warn');
@@ -184,11 +214,21 @@ async function initWhatsApp(isRestart = false) {
           // Auto-View Status
           if (config.autoView && sock) {
             try {
-              await sock.readMessages([msg.key]);
-              stats.statusesViewed++;
-              addLog(`👁️ Auto-viewed status from ${senderName} (+${participant.split('@')[0]})`, 'event');
+              const delay = (config.viewDelaySeconds || 2) * 1000 + Math.random() * 1000;
+              setTimeout(async () => {
+                try {
+                  if (sock) {
+                    await sock.readMessages([msg.key]);
+                    stats.statusesViewed++;
+                    addLog(`👁️ Auto-viewed status from ${senderName} (+${participant.split('@')[0]})`, 'event');
+                    broadcastStateUpdate();
+                  }
+                } catch (err) {
+                  console.error('Error auto-viewing status:', err?.message);
+                }
+              }, delay);
             } catch (err) {
-              console.error('Error auto-viewing status:', err?.message);
+              console.error('Error scheduling status view:', err?.message);
             }
           }
 
@@ -196,7 +236,6 @@ async function initWhatsApp(isRestart = false) {
           if (config.autoReact && sock && config.reactionEmojis?.length > 0) {
             try {
               const randomEmoji = config.reactionEmojis[Math.floor(Math.random() * config.reactionEmojis.length)];
-              // Delay slightly for natural feel
               setTimeout(async () => {
                 try {
                   if (sock) {
@@ -208,6 +247,7 @@ async function initWhatsApp(isRestart = false) {
                     });
                     stats.reactionsSent++;
                     addLog(`🔥 Auto-reacted ${randomEmoji} to status from ${senderName}`, 'event');
+                    broadcastStateUpdate();
                   }
                 } catch (reactErr) {
                   console.error('Error auto-reacting:', reactErr?.message);
@@ -255,7 +295,6 @@ async function initWhatsApp(isRestart = false) {
               const replyText = response?.text?.trim();
 
               if (replyText && sock) {
-                // Small natural typing delay
                 await sock.sendPresenceUpdate('composing', remoteJid);
                 setTimeout(async () => {
                   try {
@@ -264,6 +303,7 @@ async function initWhatsApp(isRestart = false) {
                       stats.aiRepliesSent++;
                       addLog(`🤖 Sent Gemini AI Reply to ${senderName}: "${replyText.slice(0, 60)}..."`, 'success');
                       await sock.sendPresenceUpdate('paused', remoteJid);
+                      broadcastStateUpdate();
                     }
                   } catch (sendErr) {
                     console.error('Error sending AI reply:', sendErr?.message);
@@ -304,6 +344,7 @@ app.get('/api/status', (req, res) => {
     aiResponder: config.aiResponder,
     reactionEmojis: config.reactionEmojis,
     systemPrompt: config.systemPrompt,
+    viewDelaySeconds: config.viewDelaySeconds,
     stats
   });
 });
@@ -384,6 +425,7 @@ app.post('/api/logout', async (req, res) => {
 
     setTimeout(() => initWhatsApp(true), 1500);
 
+    broadcastStateUpdate();
     res.json({ success: true, message: 'Session disconnected and cleared.' });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -423,6 +465,7 @@ app.post('/api/status/post', async (req, res) => {
 
     stats.broadcastsSent++;
     addLog(`📢 Status broadcasted successfully to all contacts!`, 'success');
+    broadcastStateUpdate();
     res.json({ success: true, message: 'Status story posted to WhatsApp.' });
   } catch (error) {
     console.error('Status post error:', error);
@@ -433,7 +476,7 @@ app.post('/api/status/post', async (req, res) => {
 
 // 6. Update Configuration
 app.post('/api/config', (req, res) => {
-  const { autoReact, reactionEmojis, autoView, aiResponder, systemPrompt, geminiKey } = req.body;
+  const { autoReact, reactionEmojis, autoView, aiResponder, systemPrompt, geminiKey, viewDelaySeconds } = req.body;
 
   if (typeof autoReact === 'boolean') config.autoReact = autoReact;
   if (Array.isArray(reactionEmojis)) config.reactionEmojis = reactionEmojis;
@@ -441,9 +484,11 @@ app.post('/api/config', (req, res) => {
   if (typeof aiResponder === 'boolean') config.aiResponder = aiResponder;
   if (typeof systemPrompt === 'string') config.systemPrompt = systemPrompt;
   if (typeof geminiKey === 'string') config.geminiKey = geminiKey;
+  if (typeof viewDelaySeconds === 'number') config.viewDelaySeconds = viewDelaySeconds;
 
   saveConfigToFile();
   addLog('Automation configuration updated.', 'info');
+  broadcastStateUpdate();
   res.json({ success: true, config });
 });
 
@@ -452,7 +497,32 @@ app.get('/api/logs', (req, res) => {
   res.json({ logs: recentLogs, stats });
 });
 
-// 8. Test AI Simulator endpoint
+// 8. Server-Sent Events (SSE) Stream
+app.get('/api/logs/stream', (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+
+  clientsSse.push(res);
+
+  res.write(`data: ${JSON.stringify({
+    type: 'init',
+    status: connectionStatus,
+    phone: activePhone,
+    name: activePushName,
+    hasQr: !!qrCodeDataUrl,
+    qr: qrCodeDataUrl,
+    logs: recentLogs.slice(0, 50),
+    stats,
+    config
+  })}\n\n`);
+
+  req.on('close', () => {
+    clientsSse = clientsSse.filter(c => c !== res);
+  });
+});
+
+// 9. Test AI Simulator endpoint
 app.post('/api/ai/test', async (req, res) => {
   try {
     const { message, systemPrompt } = req.body;
@@ -491,8 +561,10 @@ app.post('/api/ai/test', async (req, res) => {
 app.get('*', (req, res) => {
   if (fs.existsSync(distDir)) {
     res.sendFile(path.join(distDir, 'index.html'));
-  } else {
+  } else if (fs.existsSync(publicDir)) {
     res.sendFile(path.join(publicDir, 'index.html'));
+  } else {
+    res.send('WhatsApp Growth Engine is starting...');
   }
 });
 

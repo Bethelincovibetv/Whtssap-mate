@@ -6,11 +6,15 @@
   "scripts": {
     "dev": "tsx server.ts",
     "build": "vite build",
-    "start": "tsx server.ts",
-    "serve:standalone": "node server.js",
+    "start": "node server.js",
+    "serve:ts": "tsx server.ts",
+    "serve": "node server.js",
     "preview": "vite preview",
     "clean": "rm -rf dist session_auth",
     "lint": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=20.0.0"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
