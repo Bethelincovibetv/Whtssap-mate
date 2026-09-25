@@ -11,7 +11,9 @@ import {
   HelpCircle,
   Sparkles,
   Zap,
-  Info
+  Info,
+  RotateCcw,
+  AlertTriangle
 } from 'lucide-react';
 import { EngineStatusResponse } from '../types';
 
@@ -24,17 +26,21 @@ export const ConnectTab: React.FC<ConnectTabProps> = ({ statusData, onRefresh })
   const [phoneNumber, setPhoneNumber] = useState('');
   const [pairingCode, setPairingCode] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [resetting, setResetting] = useState(false);
   const [copied, setCopied] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [resetSuccess, setResetSuccess] = useState(false);
   const [showQrFallback, setShowQrFallback] = useState(false);
 
   const isConnected = statusData?.status === 'connected';
+  const isConnecting = statusData?.status === 'connecting';
 
   const handleRequestPairing = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg(null);
     setPairingCode(null);
 
+    // Clean phone number from spaces, dashes, parentheses and +
     const cleaned = phoneNumber.replace(/[^0-9]/g, '');
     if (!cleaned || cleaned.length < 8) {
       setErrorMsg('Please enter a valid international phone number with country code (e.g. 2347043537401 or 14155552671).');
@@ -51,13 +57,33 @@ export const ConnectTab: React.FC<ConnectTabProps> = ({ statusData, onRefresh })
       const data = await res.json();
       if (res.ok && data.code) {
         setPairingCode(data.code);
+        onRefresh();
       } else {
-        setErrorMsg(data.error || 'Failed to generate pairing code. Please retry.');
+        setErrorMsg(data.error || 'Failed to generate pairing code. If session is stuck, click "Reset Session" below.');
       }
     } catch (err: any) {
       setErrorMsg('Network error connecting to backend: ' + err.message);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleResetSession = async () => {
+    if (!confirm('This will clear temporary authentication files and restart the WhatsApp engine cleanly. Continue?')) return;
+    setResetting(true);
+    setErrorMsg(null);
+    setPairingCode(null);
+    try {
+      const res = await fetch('/api/reset-session', { method: 'POST' });
+      if (res.ok) {
+        setResetSuccess(true);
+        setTimeout(() => setResetSuccess(false), 3500);
+        onRefresh();
+      }
+    } catch (e: any) {
+      setErrorMsg('Reset failed: ' + e.message);
+    } finally {
+      setResetting(false);
     }
   };
 
@@ -73,7 +99,7 @@ export const ConnectTab: React.FC<ConnectTabProps> = ({ statusData, onRefresh })
       
       {/* Connected State Banner */}
       {isConnected && (
-        <div className="p-6 rounded-2xl bg-gradient-to-r from-emerald-950/40 via-emerald-900/20 to-transparent border border-emerald-500/30 flex flex-col md:flex-row items-start md:items-center justify-between gap-4 shadow-xl">
+        <div className="p-6 rounded-2xl bg-gradient-to-r from-emerald-950/50 via-emerald-900/20 to-transparent border border-emerald-500/30 flex flex-col md:flex-row items-start md:items-center justify-between gap-4 shadow-xl">
           <div className="flex items-center gap-4">
             <div className="w-12 h-12 rounded-2xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center border border-emerald-500/30">
               <CheckCircle className="w-6 h-6" />
@@ -85,7 +111,7 @@ export const ConnectTab: React.FC<ConnectTabProps> = ({ statusData, onRefresh })
               </h3>
               <p className="text-xs text-slate-300">
                 Connected as <strong className="text-emerald-400 font-mono">+{statusData?.phone}</strong> ({statusData?.name || 'Primary WhatsApp'}).
-                Background automation listeners are active.
+                Auto-viewing, auto-reacting, and AI responses are live.
               </p>
             </div>
           </div>
@@ -125,59 +151,88 @@ export const ConnectTab: React.FC<ConnectTabProps> = ({ statusData, onRefresh })
             </div>
 
             <p className="text-xs text-slate-300 leading-relaxed mb-5">
-              Enter your WhatsApp phone number with your country code. You’ll instantly receive an 8-digit code to type into WhatsApp on your phone. <span className="text-emerald-400 font-medium">No second phone or camera required.</span>
+              Enter your WhatsApp phone number with your country code. You’ll receive an 8-digit code to type into WhatsApp on your phone. <span className="text-emerald-400 font-medium">No second phone or camera required.</span>
             </p>
 
             <form onSubmit={handleRequestPairing} className="space-y-4">
               <div>
                 <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-2">
-                  WhatsApp Phone Number (with country code)
+                  WhatsApp Phone Number (with Country Code)
                 </label>
                 <div className="relative">
                   <input
                     type="tel"
                     value={phoneNumber}
                     onChange={(e) => setPhoneNumber(e.target.value)}
-                    placeholder="e.g. 2347043537401 or 14155552671"
+                    placeholder="e.g. +234 704 353 7401 or 14155552671"
                     disabled={isConnected || loading}
                     className="w-full bg-[#0b141a] border border-[#202c33] focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 rounded-xl px-4 py-3.5 text-white font-mono text-sm placeholder-slate-600 outline-none transition-all disabled:opacity-60"
                   />
                 </div>
                 <div className="flex items-center justify-between mt-1.5 text-[11px] text-slate-400">
-                  <span>Include country code (e.g. 1 for USA, 234 for Nigeria, 44 for UK, 91 for India).</span>
-                  <span className="text-slate-500">Digits only</span>
+                  <span>Include country code (e.g. 234 for Nigeria, 1 for USA/Canada, 44 for UK, 91 for India).</span>
+                  <span className="text-slate-500">Auto-formatted</span>
                 </div>
               </div>
 
               {errorMsg && (
                 <div className="p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs flex items-start gap-2">
-                  <span className="text-sm">⚠️</span>
-                  <span>{errorMsg}</span>
+                  <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                  <div className="space-y-1">
+                    <p>{errorMsg}</p>
+                    <button
+                      type="button"
+                      onClick={handleResetSession}
+                      className="underline text-rose-200 hover:text-white font-medium"
+                    >
+                      Click here to reset & restart WhatsApp socket
+                    </button>
+                  </div>
                 </div>
               )}
 
-              <button
-                type="submit"
-                disabled={isConnected || loading}
-                className="w-full py-3.5 px-4 rounded-xl bg-gradient-to-r from-[#128C7E] to-[#25D366] hover:from-[#075E54] hover:to-[#128C7E] disabled:from-slate-800 disabled:to-slate-800 disabled:text-slate-600 text-white font-bold text-sm transition-all shadow-lg shadow-emerald-950/40 flex items-center justify-center gap-2 cursor-pointer disabled:cursor-not-allowed"
-              >
-                {loading ? (
-                  <>
-                    <RefreshCw className="w-4 h-4 animate-spin text-white" />
-                    <span>Requesting 8-Digit Pairing Code...</span>
-                  </>
-                ) : isConnected ? (
-                  <>
-                    <Check className="w-4 h-4 text-emerald-300" />
-                    <span>Device Already Connected</span>
-                  </>
-                ) : (
-                  <>
-                    <span>Generate 8-Digit Pairing Code</span>
-                    <ArrowRight className="w-4 h-4" />
-                  </>
-                )}
-              </button>
+              {resetSuccess && (
+                <div className="p-3.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs flex items-center gap-2">
+                  <Check className="w-4 h-4 text-emerald-400 shrink-0" />
+                  <span>Session reset successfully! Socket is ready for a fresh connection.</span>
+                </div>
+              )}
+
+              <div className="flex flex-col sm:flex-row gap-2">
+                <button
+                  type="submit"
+                  disabled={isConnected || loading || resetting}
+                  className="flex-1 py-3.5 px-4 rounded-xl bg-gradient-to-r from-[#128C7E] to-[#25D366] hover:from-[#075E54] hover:to-[#128C7E] disabled:from-slate-800 disabled:to-slate-800 disabled:text-slate-600 text-white font-bold text-sm transition-all shadow-lg shadow-emerald-950/40 flex items-center justify-center gap-2 cursor-pointer disabled:cursor-not-allowed"
+                >
+                  {loading ? (
+                    <>
+                      <RefreshCw className="w-4 h-4 animate-spin text-white" />
+                      <span>Requesting 8-Digit Code...</span>
+                    </>
+                  ) : isConnected ? (
+                    <>
+                      <Check className="w-4 h-4 text-emerald-300" />
+                      <span>Device Connected</span>
+                    </>
+                  ) : (
+                    <>
+                      <span>Get 8-Digit Pairing Code</span>
+                      <ArrowRight className="w-4 h-4" />
+                    </>
+                  )}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleResetSession}
+                  disabled={loading || resetting}
+                  className="py-3 px-3.5 rounded-xl bg-[#0b141a] hover:bg-[#202c33] border border-[#202c33] text-slate-300 hover:text-white text-xs font-semibold transition-all flex items-center justify-center gap-1.5 cursor-pointer"
+                  title="Clear any cached or stuck session"
+                >
+                  <RotateCcw className={`w-3.5 h-3.5 ${resetting ? 'animate-spin' : ''}`} />
+                  <span>{resetting ? 'Resetting...' : 'Reset Session'}</span>
+                </button>
+              </div>
             </form>
 
             {/* Pairing Code Display Card */}
@@ -196,7 +251,7 @@ export const ConnectTab: React.FC<ConnectTabProps> = ({ statusData, onRefresh })
                     <button
                       onClick={handleCopyCode}
                       className="p-3.5 rounded-xl bg-[#202c33] hover:bg-[#2a3942] active:scale-95 text-slate-200 hover:text-white transition-all border border-slate-700/50 shadow-md"
-                      title="Copy code without dash"
+                      title="Copy code to clipboard"
                     >
                       {copied ? <Check className="w-5 h-5 text-emerald-400" /> : <Copy className="w-5 h-5" />}
                     </button>
@@ -211,13 +266,13 @@ export const ConnectTab: React.FC<ConnectTabProps> = ({ statusData, onRefresh })
                   {/* Step-by-Step Instructions */}
                   <div className="mt-4 text-left p-4 rounded-xl bg-[#111b21] border border-[#202c33] text-xs space-y-2">
                     <div className="font-bold text-emerald-400 flex items-center gap-1.5 mb-1 text-xs">
-                      <span>📱</span> Enter this code on your phone in 5 steps:
+                      <span>📱</span> Complete linking on your phone:
                     </div>
                     <ol className="list-decimal list-inside space-y-1 text-slate-300 leading-relaxed text-[11px]">
-                      <li>Open <strong className="text-white">WhatsApp</strong> on your mobile phone.</li>
-                      <li>Go to <strong className="text-white">Settings</strong> (or 3 dots menu) &gt; <strong className="text-white">Linked Devices</strong>.</li>
-                      <li>Tap the green <strong className="text-white">Link a Device</strong> button.</li>
-                      <li>At the bottom of the camera screen, tap <strong className="text-emerald-400 underline">Link with phone number instead</strong>.</li>
+                      <li>Open <strong className="text-white">WhatsApp</strong> on your mobile device.</li>
+                      <li>Tap <strong className="text-white">Settings</strong> (or 3 dots at top right) &gt; <strong className="text-white">Linked Devices</strong>.</li>
+                      <li>Tap <strong className="text-white">Link a Device</strong>.</li>
+                      <li>Tap <strong className="text-emerald-400 underline">Link with phone number instead</strong> (at the bottom).</li>
                       <li>Type in the 8-digit code <strong className="text-emerald-400 font-mono">{pairingCode}</strong>.</li>
                     </ol>
                   </div>
@@ -229,13 +284,13 @@ export const ConnectTab: React.FC<ConnectTabProps> = ({ statusData, onRefresh })
           <div className="mt-6 pt-4 border-t border-[#202c33] flex items-center justify-between text-[11px] text-slate-400">
             <span className="flex items-center gap-1">
               <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-              <span>End-to-End Encrypted via Baileys</span>
+              <span>Encrypted WhatsApp Protocol</span>
             </span>
             <button
               onClick={() => setShowQrFallback(!showQrFallback)}
               className="text-slate-400 hover:text-emerald-400 underline"
             >
-              {showQrFallback ? 'Hide QR Code' : 'Prefer QR Code instead?'}
+              {showQrFallback ? 'Hide QR Code' : 'QR Code Scanner fallback'}
             </button>
           </div>
         </div>
@@ -263,7 +318,7 @@ export const ConnectTab: React.FC<ConnectTabProps> = ({ statusData, onRefresh })
             </div>
 
             <p className="text-xs text-slate-400 mb-4">
-              Open WhatsApp on your mobile &gt; Linked Devices &gt; Point camera at this QR code to scan.
+              WhatsApp &gt; Linked Devices &gt; Point phone camera at this QR code.
             </p>
 
             {/* QR Box */}
@@ -288,7 +343,7 @@ export const ConnectTab: React.FC<ConnectTabProps> = ({ statusData, onRefresh })
                     <CheckCircle className="w-6 h-6" />
                   </div>
                   <p className="text-sm font-bold text-white">Session Active</p>
-                  <p className="text-xs text-slate-400">Your device is successfully linked.</p>
+                  <p className="text-xs text-slate-400">Your device is linked to WhatsApp.</p>
                 </div>
               ) : (
                 <div className="text-center p-6 space-y-3">
@@ -296,13 +351,13 @@ export const ConnectTab: React.FC<ConnectTabProps> = ({ statusData, onRefresh })
                     <QrCode className="w-6 h-6" />
                   </div>
                   <p className="text-xs text-slate-400">
-                    Generating initial QR code or waiting for connection...
+                    {isConnecting ? 'Generating fresh QR code...' : 'Waiting for connection or phone pairing...'}
                   </p>
                   <button
                     onClick={onRefresh}
                     className="px-3 py-1.5 rounded-lg bg-[#202c33] hover:bg-[#2a3942] text-xs text-emerald-400 font-medium transition-all"
                   >
-                    Check QR Status
+                    Check Status
                   </button>
                 </div>
               )}

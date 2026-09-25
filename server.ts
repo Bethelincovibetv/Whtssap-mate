@@ -2,7 +2,8 @@ import makeWASocket, {
   DisconnectReason,
   useMultiFileAuthState,
   fetchLatestBaileysVersion,
-  makeCacheableSignalKeyStore
+  makeCacheableSignalKeyStore,
+  Browsers
 } from '@whiskeysockets/baileys';
 import pino from 'pino';
 import QRCode from 'qrcode';
@@ -78,11 +79,13 @@ export interface ActivityLog {
 
 let sock: any = null;
 let connectionStatus: 'disconnected' | 'connecting' | 'connected' = 'disconnected';
+let connectionPhase: string = 'idle';
 let qrCodeDataUrl: string | null = null;
 let activePhone: string | null = null;
 let activePushName: string | null = null;
 let recentLogs: ActivityLog[] = [];
 let clientsSse: Response[] = [];
+let isInitializing = false;
 
 const stats = {
   statusesViewed: 0,
@@ -105,7 +108,6 @@ function addLog(message: string, type: ActivityLog['type'] = 'info', metadata?: 
   
   console.log(`[WA Engine][${type.toUpperCase()}] ${message}`);
 
-  // Broadcast to SSE clients
   const sseData = `data: ${JSON.stringify({ type: 'log', log: logItem, stats })}\n\n`;
   clientsSse.forEach(client => {
     try {
@@ -118,6 +120,7 @@ function broadcastStateUpdate() {
   const sseData = `data: ${JSON.stringify({
     type: 'state',
     status: connectionStatus,
+    phase: connectionPhase,
     phone: activePhone,
     name: activePushName,
     hasQr: !!qrCodeDataUrl,
@@ -134,29 +137,58 @@ function broadcastStateUpdate() {
 
 const AUTH_DIR = path.join(__dirname, 'session_auth');
 
-async function initWhatsApp(isRestart = false) {
+async function initWhatsApp(forceFresh = false) {
+  if (isInitializing) return;
+  isInitializing = true;
+
   try {
+    if (forceFresh) {
+      addLog('Clearing session storage for fresh link...', 'info');
+      try {
+        if (sock) {
+          sock.ev.removeAllListeners('connection.update');
+          sock.ev.removeAllListeners('creds.update');
+          sock.ev.removeAllListeners('messages.upsert');
+          sock.end(undefined);
+        }
+      } catch (e) {}
+      if (fs.existsSync(AUTH_DIR)) {
+        fs.rmSync(AUTH_DIR, { recursive: true, force: true });
+      }
+      activePhone = null;
+      activePushName = null;
+      qrCodeDataUrl = null;
+    }
+
     if (!fs.existsSync(AUTH_DIR)) {
       fs.mkdirSync(AUTH_DIR, { recursive: true });
     }
 
     const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
-    const { version, isLatest } = await fetchLatestBaileysVersion();
+    const { version } = await fetchLatestBaileysVersion().catch(() => ({ version: [2, 3000, 1015901307] as [number, number, number], isLatest: true }));
 
-    addLog(`Initializing Baileys WhatsApp Engine v${version.join('.')}${isLatest ? ' (latest)' : ''}...`, 'info');
+    addLog(`Initializing Baileys WA Socket v${version.join('.')}...`, 'info');
+    connectionStatus = 'connecting';
+    connectionPhase = 'initializing';
+    broadcastStateUpdate();
+
+    const browserTuple: [string, string, string] = ['Ubuntu', 'Chrome', '20.0.04'];
 
     sock = makeWASocket({
-      version,
+      version: version as [number, number, number],
       logger: pino({ level: 'silent' }),
       printQRInTerminal: false,
       auth: {
         creds: state.creds,
         keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'silent' }))
       },
-      browser: ['WhatsApp Growth Engine', 'Chrome', '1.0.0'],
+      browser: browserTuple,
       markOnlineOnConnect: true,
       generateHighQualityLinkPreview: true,
-      syncFullHistory: false
+      syncFullHistory: false,
+      connectTimeoutMs: 60000,
+      defaultQueryTimeoutMs: 60000,
+      keepAliveIntervalMs: 10000
     });
 
     sock.ev.on('creds.update', saveCreds);
@@ -172,7 +204,8 @@ async function initWhatsApp(isRestart = false) {
             color: { dark: '#075e54', light: '#ffffff' }
           });
           connectionStatus = 'connecting';
-          addLog('QR Code generated. Ready for pairing or direct scan.', 'info');
+          connectionPhase = 'awaiting_pair';
+          addLog('QR Code & Pairing ready. Enter phone number or scan QR.', 'info');
           broadcastStateUpdate();
         } catch (err: any) {
           console.error('Failed to generate QR code data URL', err);
@@ -181,6 +214,7 @@ async function initWhatsApp(isRestart = false) {
 
       if (connection === 'open') {
         connectionStatus = 'connected';
+        connectionPhase = 'ready';
         qrCodeDataUrl = null;
         activePhone = sock.user?.id?.split(':')[0]?.split('@')[0] || sock.user?.id || 'Connected User';
         activePushName = sock.user?.name || sock.user?.notify || 'My WhatsApp Account';
@@ -189,24 +223,32 @@ async function initWhatsApp(isRestart = false) {
       }
 
       if (connection === 'close') {
-        const statusCode = (lastDisconnect?.error as any)?.output?.statusCode;
+        const statusCode = (lastDisconnect?.error as any)?.output?.statusCode || (lastDisconnect?.error as any)?.statusCode;
         const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
         connectionStatus = 'disconnected';
+        connectionPhase = 'closed';
         qrCodeDataUrl = null;
 
-        addLog(`Connection closed: ${lastDisconnect?.error?.message || 'Status code ' + statusCode}. Reconnect: ${shouldReconnect}`, 'warn');
+        addLog(`Connection closed: ${lastDisconnect?.error?.message || 'Status ' + statusCode}. Reconnect: ${shouldReconnect}`, 'warn');
         broadcastStateUpdate();
 
-        if (statusCode === DisconnectReason.loggedOut) {
+        if (statusCode === DisconnectReason.loggedOut || statusCode === 401) {
           addLog('Device logged out. Clearing auth credentials...', 'warn');
           try {
             fs.rmSync(AUTH_DIR, { recursive: true, force: true });
           } catch (e) {}
           activePhone = null;
           activePushName = null;
-          setTimeout(() => initWhatsApp(true), 2000);
-        } else if (shouldReconnect) {
-          setTimeout(() => initWhatsApp(true), 3000);
+          setTimeout(() => {
+            isInitializing = false;
+            initWhatsApp(true);
+          }, 2000);
+        } else if (statusCode === 515 || statusCode === 428 || shouldReconnect) {
+          addLog(`Reconnecting socket (Code ${statusCode || 'reconnect'})...`, 'info');
+          setTimeout(() => {
+            isInitializing = false;
+            initWhatsApp(false);
+          }, 2000);
         }
       }
     });
@@ -313,7 +355,6 @@ async function initWhatsApp(isRestart = false) {
               const replyText = response?.text?.trim();
 
               if (replyText && sock) {
-                // Natural presence indicator
                 await sock.sendPresenceUpdate('composing', remoteJid);
                 
                 setTimeout(async () => {
@@ -345,7 +386,13 @@ async function initWhatsApp(isRestart = false) {
     console.error('Fatal initialization error in WhatsApp engine:', error);
     addLog(`Engine initial error: ${error.message}`, 'error');
     connectionStatus = 'disconnected';
-    setTimeout(() => initWhatsApp(true), 5000);
+    connectionPhase = 'error';
+    setTimeout(() => {
+      isInitializing = false;
+      initWhatsApp(false);
+    }, 5000);
+  } finally {
+    isInitializing = false;
   }
 }
 
@@ -355,6 +402,7 @@ async function initWhatsApp(isRestart = false) {
 app.get('/api/status', (req: Request, res: Response) => {
   res.json({
     status: connectionStatus,
+    phase: connectionPhase,
     phone: activePhone,
     name: activePushName,
     hasQr: !!qrCodeDataUrl,
@@ -373,7 +421,8 @@ app.get('/api/status', (req: Request, res: Response) => {
 app.get('/api/qr', (req: Request, res: Response) => {
   res.json({
     qr: qrCodeDataUrl,
-    status: connectionStatus
+    status: connectionStatus,
+    phase: connectionPhase
   });
 });
 
@@ -391,11 +440,13 @@ app.post('/api/pairing-code', async (req: Request, res: Response) => {
     }
 
     if (connectionStatus === 'connected') {
-      return res.status(400).json({ error: 'WhatsApp is already connected! Disconnect first to link a new number.' });
+      return res.status(400).json({ error: 'WhatsApp is already connected! Click "Disconnect" first to link a new number.' });
     }
 
-    if (!sock) {
-      await initWhatsApp();
+    if (!sock || !sock.ws || sock.ws.readyState === 3) {
+      addLog('Reconnecting socket for pairing code request...', 'info');
+      await initWhatsApp(false);
+      await new Promise(r => setTimeout(r, 1500));
     }
 
     addLog(`Requesting 8-digit Pairing Code for +${cleanedNumber}...`, 'info');
@@ -416,12 +467,23 @@ app.post('/api/pairing-code', async (req: Request, res: Response) => {
     console.error('Pairing code request error:', error);
     addLog(`Pairing code request failed: ${error.message}`, 'error');
     res.status(500).json({
-      error: error.message || 'Failed to request pairing code from WhatsApp servers. Please retry in a few seconds.'
+      error: error.message || 'Failed to request pairing code from WhatsApp servers. Please retry or click "Reset Session".'
     });
   }
 });
 
-// 4. Disconnect & Clear Auth
+// 4. Force Reset Session
+app.post('/api/reset-session', async (req: Request, res: Response) => {
+  try {
+    addLog('User requested Force Reset of WhatsApp session.', 'info');
+    await initWhatsApp(true);
+    res.json({ success: true, message: 'WhatsApp session storage cleared and socket restarted.' });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 5. Disconnect & Clear Auth
 app.post('/api/logout', async (req: Request, res: Response) => {
   try {
     addLog('User requested WhatsApp session disconnect.', 'info');
@@ -435,6 +497,7 @@ app.post('/api/logout', async (req: Request, res: Response) => {
     }
     
     connectionStatus = 'disconnected';
+    connectionPhase = 'closed';
     activePhone = null;
     activePushName = null;
     qrCodeDataUrl = null;
@@ -452,7 +515,7 @@ app.post('/api/logout', async (req: Request, res: Response) => {
   }
 });
 
-// 5. Post Status Broadcast
+// 6. Post Status Broadcast
 app.post('/api/status/post', async (req: Request, res: Response) => {
   try {
     const { text, imageUrl, backgroundColor } = req.body;
@@ -495,7 +558,7 @@ app.post('/api/status/post', async (req: Request, res: Response) => {
   }
 });
 
-// 6. Update Configuration
+// 7. Update Configuration
 app.post('/api/config', (req: Request, res: Response) => {
   const { autoReact, reactionEmojis, autoView, aiResponder, systemPrompt, geminiKey, viewDelaySeconds } = req.body;
 
@@ -513,12 +576,12 @@ app.post('/api/config', (req: Request, res: Response) => {
   res.json({ success: true, config });
 });
 
-// 7. Activity Logs
+// 8. Activity Logs
 app.get('/api/logs', (req: Request, res: Response) => {
   res.json({ logs: recentLogs, stats });
 });
 
-// 8. Server-Sent Events (SSE) Stream
+// 9. Server-Sent Events (SSE) Stream
 app.get('/api/logs/stream', (req: Request, res: Response) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
@@ -526,10 +589,10 @@ app.get('/api/logs/stream', (req: Request, res: Response) => {
 
   clientsSse.push(res);
 
-  // Send initial snapshot
   res.write(`data: ${JSON.stringify({
     type: 'init',
     status: connectionStatus,
+    phase: connectionPhase,
     phone: activePhone,
     name: activePushName,
     hasQr: !!qrCodeDataUrl,
@@ -544,7 +607,7 @@ app.get('/api/logs/stream', (req: Request, res: Response) => {
   });
 });
 
-// 9. AI Sandbox Test Endpoint
+// 10. AI Sandbox Test Endpoint
 app.post('/api/ai/test', async (req: Request, res: Response) => {
   try {
     const { message, systemPrompt } = req.body;
@@ -607,7 +670,7 @@ async function startServer() {
     console.log(`====================================================`);
 
     // Start Baileys in background
-    initWhatsApp();
+    initWhatsApp(false);
   });
 }
 

@@ -138,10 +138,15 @@
               </div>
             </div>
 
-            <button id="getPairingBtn" onclick="requestPairingCode()" class="w-full py-3.5 px-4 bg-gradient-to-r from-[#128C7E] to-[#25D366] hover:from-[#075E54] hover:to-[#128C7E] text-white font-semibold rounded-xl transition-all shadow-lg shadow-emerald-950/40 flex items-center justify-center gap-2">
-              <span>Get 8-Digit Pairing Code</span>
-              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"/></svg>
-            </button>
+            <div class="flex gap-2">
+              <button id="getPairingBtn" onclick="requestPairingCode()" class="flex-1 py-3.5 px-4 bg-gradient-to-r from-[#128C7E] to-[#25D366] hover:from-[#075E54] hover:to-[#128C7E] text-white font-semibold rounded-xl transition-all shadow-lg shadow-emerald-950/40 flex items-center justify-center gap-2">
+                <span>Get 8-Digit Pairing Code</span>
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"/></svg>
+              </button>
+              <button onclick="handleResetSession()" class="px-3.5 py-3.5 rounded-xl bg-[#0b141a] hover:bg-[#202c33] border border-[#202c33] text-slate-300 text-xs font-semibold transition-all flex items-center gap-1.5" title="Reset and restart WhatsApp connection">
+                <span>🔄 Reset</span>
+              </button>
+            </div>
 
             <!-- Pairing Code Result Box -->
             <div id="pairingResultBox" class="hidden mt-6 p-5 bg-[#0b141a] rounded-xl border border-emerald-500/40">
@@ -513,6 +518,17 @@
       const toast = document.getElementById('copyToast');
       toast.classList.remove('hidden');
       setTimeout(() => toast.classList.add('hidden'), 3000);
+    }
+
+    async function handleResetSession() {
+      if (!confirm('Clear session files and restart WhatsApp connection?')) return;
+      try {
+        await fetch('/api/reset-session', { method: 'POST' });
+        alert('WhatsApp session cleared. Ready for pairing.');
+        fetchStatus();
+      } catch (e) {
+        console.error(e);
+      }
     }
 
     async function handleLogout() {

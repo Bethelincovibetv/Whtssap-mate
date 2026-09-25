@@ -26,6 +26,7 @@ export interface ActivityLog {
 
 export interface EngineStatusResponse {
   status: 'disconnected' | 'connecting' | 'connected';
+  phase?: string;
   phone: string | null;
   name: string | null;
   hasQr: boolean;
