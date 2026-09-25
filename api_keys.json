@@ -1,0 +1,18 @@
+[
+  {
+    "id": "key_121520c3",
+    "name": "Primary Integration Key",
+    "key": "wge_live_9f82c66c906e1f1f48203dbed9c98e5e",
+    "createdAt": "2026-09-25T12:51:14.989Z",
+    "lastUsedAt": "2026-09-25T12:51:22.505Z",
+    "requestCount": 1,
+    "status": "active",
+    "permissions": [
+      "messages:send",
+      "messages:media",
+      "groups:read",
+      "groups:send",
+      "status:read"
+    ]
+  }
+]

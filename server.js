@@ -8,6 +8,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { execSync } from 'child_process';
+import crypto from 'crypto';
 import { GoogleGenAI } from '@google/genai';
 
 dotenv.config();
@@ -112,6 +113,83 @@ function saveConfigToFile() {
     console.error('Failed to save config.json:', e);
   }
 }
+
+// API Keys & Webhook Persistence
+const API_KEYS_FILE = path.join(__dirname, 'api_keys.json');
+const WEBHOOK_FILE = path.join(__dirname, 'webhook.json');
+
+let apiKeys = [];
+let webhookConfig = {
+  url: '',
+  enabled: false,
+  events: ['messages.upsert', 'status.view'],
+  secret: ''
+};
+
+if (fs.existsSync(API_KEYS_FILE)) {
+  try {
+    apiKeys = JSON.parse(fs.readFileSync(API_KEYS_FILE, 'utf-8'));
+  } catch (e) {
+    console.error('Error loading api_keys.json:', e);
+  }
+} else {
+  const starterKey = {
+    id: 'key_' + crypto.randomBytes(4).toString('hex'),
+    name: 'Primary Integration Key',
+    key: 'wge_live_' + crypto.randomBytes(16).toString('hex'),
+    createdAt: new Date().toISOString(),
+    lastUsedAt: null,
+    requestCount: 0,
+    status: 'active',
+    permissions: ['messages:send', 'messages:media', 'groups:read', 'groups:send', 'status:read']
+  };
+  apiKeys = [starterKey];
+  try {
+    fs.writeFileSync(API_KEYS_FILE, JSON.stringify(apiKeys, null, 2));
+  } catch (e) {}
+}
+
+if (fs.existsSync(WEBHOOK_FILE)) {
+  try {
+    webhookConfig = JSON.parse(fs.readFileSync(WEBHOOK_FILE, 'utf-8'));
+  } catch (e) {}
+}
+
+function saveApiKeysToFile() {
+  try {
+    fs.writeFileSync(API_KEYS_FILE, JSON.stringify(apiKeys, null, 2));
+  } catch (e) {
+    console.error('Failed to save api_keys.json:', e);
+  }
+}
+
+function saveWebhookToFile() {
+  try {
+    fs.writeFileSync(WEBHOOK_FILE, JSON.stringify(webhookConfig, null, 2));
+  } catch (e) {
+    console.error('Failed to save webhook.json:', e);
+  }
+}
+
+let keepAliveTimer = null;
+let reconnectAttemptCount = 0;
+
+function startKeepAliveLoop() {
+  if (keepAliveTimer) clearInterval(keepAliveTimer);
+  keepAliveTimer = setInterval(async () => {
+    try {
+      if (sock && connectionStatus === 'connected') {
+        await sock.sendPresenceUpdate('available').catch(() => {});
+        if (sock.ws && typeof sock.ws.ping === 'function') {
+          try { sock.ws.ping(); } catch (e) {}
+        }
+      }
+    } catch (err) {
+      console.warn('[Keep-Alive Tick]', err?.message);
+    }
+  }, 20000);
+}
+
 
 let sock = null;
 let connectionStatus = 'disconnected'; // 'disconnected' | 'connecting' | 'connected'
@@ -328,15 +406,26 @@ async function initWhatsApp(forceFresh = false) {
         connectionStatus = 'connected';
         connectionPhase = 'ready';
         qrCodeDataUrl = null;
+        reconnectAttemptCount = 0;
         activePhone = sock.user?.id?.split(':')[0]?.split('@')[0] || sock.user?.id || 'Connected User';
         activePushName = sock.user?.name || sock.user?.notify || 'My WhatsApp';
         addLog(`WhatsApp socket connected successfully as +${activePhone} (${activePushName})`, 'success', 'system');
+        
+        // Start 24/7 Keep-Alive heartbeat loop
+        startKeepAliveLoop();
+        sock.sendPresenceUpdate('available').catch(() => {});
         broadcastStateUpdate();
       }
 
       if (connection === 'close') {
+        if (keepAliveTimer) {
+          clearInterval(keepAliveTimer);
+          keepAliveTimer = null;
+        }
+
         const statusCode = lastDisconnect?.error?.output?.statusCode || lastDisconnect?.error?.statusCode;
-        const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+        const isLoggedOut = statusCode === DisconnectReason.loggedOut || statusCode === 401;
+        const shouldReconnect = !isLoggedOut;
         connectionStatus = 'disconnected';
         connectionPhase = 'closed';
         qrCodeDataUrl = null;
@@ -344,7 +433,7 @@ async function initWhatsApp(forceFresh = false) {
         addLog(`Connection closed: ${lastDisconnect?.error?.message || 'Status ' + statusCode}. Auto-reconnect: ${shouldReconnect}`, 'warn', 'system');
         broadcastStateUpdate();
 
-        if (statusCode === DisconnectReason.loggedOut || statusCode === 401) {
+        if (isLoggedOut) {
           addLog('Session logged out. Cleaning session files...', 'warn', 'system');
           try {
             fs.rmSync(AUTH_DIR, { recursive: true, force: true });
@@ -355,12 +444,14 @@ async function initWhatsApp(forceFresh = false) {
             isInitializing = false;
             initWhatsApp(true);
           }, 2000);
-        } else if (statusCode === 515 || statusCode === 428 || shouldReconnect) {
-          addLog(`Reconnecting socket (Code ${statusCode || 'reconnect'})...`, 'info', 'system');
+        } else if (shouldReconnect) {
+          reconnectAttemptCount++;
+          const retryDelay = Math.min(2000 * Math.pow(1.3, Math.min(reconnectAttemptCount, 6)), 15000);
+          addLog(`Auto-reconnecting socket in ${Math.round(retryDelay / 1000)}s (Attempt #${reconnectAttemptCount}, Code: ${statusCode || 'net'})...`, 'info', 'system');
           setTimeout(() => {
             isInitializing = false;
             initWhatsApp(false);
-          }, 2000);
+          }, retryDelay);
         }
       }
     });
@@ -485,6 +576,24 @@ async function initWhatsApp(forceFresh = false) {
 
           addLog(`📥 Incoming DM from ${senderName} (+${senderPhone}): "${text}"`, 'info', 'ai');
 
+          // Forward to external Webhook if configured
+          if (webhookConfig.enabled && webhookConfig.url) {
+            fetch(webhookConfig.url, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                ...(webhookConfig.secret ? { 'x-webhook-secret': webhookConfig.secret } : {})
+              },
+              body: JSON.stringify({
+                event: 'message.received',
+                from: senderPhone,
+                name: senderName,
+                text: text,
+                timestamp: new Date().toISOString()
+              })
+            }).catch((err) => console.warn('[Webhook Dispatch Error]', err?.message));
+          }
+
           // Check Fallback Rules first
           const matchedRule = (config.fallbackRules || []).find(r => 
             r.enabled && r.keywords.some(k => textLower.includes(k.toLowerCase()))
@@ -579,6 +688,284 @@ async function initWhatsApp(forceFresh = false) {
 }
 
 // REST API Endpoints
+
+// 0. Keep-Alive / Health Endpoint
+app.get(['/api/ping', '/api/health'], (req, res) => {
+  res.json({
+    status: 'ok',
+    uptime: Math.floor(process.uptime()),
+    connected: connectionStatus === 'connected',
+    phone: activePhone,
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Middleware for Developer REST API v1
+function validateApiKey(req, res, next) {
+  const authHeader = req.headers['authorization'];
+  const apiKeyHeader = req.headers['x-api-key'];
+  let token = apiKeyHeader;
+
+  if (!token && authHeader && authHeader.startsWith('Bearer ')) {
+    token = authHeader.substring(7).trim();
+  }
+
+  if (!token) {
+    return res.status(401).json({
+      error: 'Unauthorized: Missing API key. Pass via x-api-key header or Authorization: Bearer <key>'
+    });
+  }
+
+  const foundKey = apiKeys.find(k => k.key === token && k.status === 'active');
+  if (!foundKey) {
+    return res.status(401).json({
+      error: 'Unauthorized: Invalid or revoked API key.'
+    });
+  }
+
+  foundKey.requestCount = (foundKey.requestCount || 0) + 1;
+  foundKey.lastUsedAt = new Date().toISOString();
+  saveApiKeysToFile();
+
+  req.apiKey = foundKey;
+  next();
+}
+
+// API Key Management Routes
+app.get('/api/keys', (req, res) => {
+  res.json({ keys: apiKeys });
+});
+
+app.post('/api/keys', (req, res) => {
+  try {
+    const { name, permissions } = req.body;
+    const newKey = {
+      id: 'key_' + crypto.randomBytes(4).toString('hex'),
+      name: (name || 'API Client').trim(),
+      key: 'wge_live_' + crypto.randomBytes(16).toString('hex'),
+      createdAt: new Date().toISOString(),
+      lastUsedAt: null,
+      requestCount: 0,
+      status: 'active',
+      permissions: permissions || ['messages:send', 'messages:media', 'groups:read', 'groups:send', 'status:read']
+    };
+    apiKeys.unshift(newKey);
+    saveApiKeysToFile();
+    addLog(`🔑 Generated new API Key: "${newKey.name}"`, 'info', 'system');
+    res.json({ success: true, key: newKey });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/keys/:id', (req, res) => {
+  const { id } = req.params;
+  const index = apiKeys.findIndex(k => k.id === id);
+  if (index !== -1) {
+    const removed = apiKeys.splice(index, 1)[0];
+    saveApiKeysToFile();
+    addLog(`🗑️ Revoked API Key: "${removed.name}"`, 'warn', 'system');
+    res.json({ success: true, id });
+  } else {
+    res.status(404).json({ error: 'API key not found' });
+  }
+});
+
+// Webhook Configuration
+app.get('/api/webhook/config', (req, res) => {
+  res.json(webhookConfig);
+});
+
+app.post('/api/webhook/config', (req, res) => {
+  try {
+    const { url, secret, enabled } = req.body;
+    webhookConfig = {
+      ...webhookConfig,
+      url: (url || '').trim(),
+      secret: (secret || '').trim(),
+      enabled: !!enabled
+    };
+    saveWebhookToFile();
+    addLog(`🌐 Webhook config updated: ${webhookConfig.enabled ? webhookConfig.url : 'Disabled'}`, 'info', 'system');
+    res.json({ success: true, config: webhookConfig });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ==========================================
+// PUBLIC DEVELOPER REST API v1
+// ==========================================
+
+// 1. Connection Status Check
+app.get('/api/v1/status', validateApiKey, (req, res) => {
+  res.json({
+    status: connectionStatus,
+    phase: connectionPhase,
+    phone: activePhone,
+    name: activePushName,
+    connected: connectionStatus === 'connected',
+    uptime: Math.floor(process.uptime()),
+    timestamp: new Date().toISOString()
+  });
+});
+
+// 2. Send WhatsApp Message
+app.post('/api/v1/messages/send', validateApiKey, async (req, res) => {
+  try {
+    const { to, message } = req.body;
+
+    if (!to || !message) {
+      return res.status(400).json({ error: 'Missing required fields: "to" and "message" are required.' });
+    }
+
+    if (!sock || connectionStatus !== 'connected') {
+      return res.status(503).json({ error: 'WhatsApp socket is not connected. Pair your WhatsApp account in the dashboard first.' });
+    }
+
+    let cleanNumber = String(to).replace(/[^0-9]/g, '');
+    let jid = '';
+    if (String(to).endsWith('@g.us') || String(to).endsWith('@s.whatsapp.net')) {
+      jid = to;
+    } else {
+      if (!cleanNumber || cleanNumber.length < 8) {
+        return res.status(400).json({ error: 'Invalid destination phone number. Include full country dial code.' });
+      }
+      jid = `${cleanNumber}@s.whatsapp.net`;
+    }
+
+    const parsedText = parseSpintax(message);
+    const result = await sock.sendMessage(jid, { text: parsedText });
+
+    stats.campaignMessagesSent++;
+    addLog(`🚀 [REST API] Sent message to ${cleanNumber || jid}: "${parsedText.slice(0, 45)}..."`, 'success', 'system');
+    broadcastStateUpdate();
+
+    res.json({
+      success: true,
+      messageId: result?.key?.id || ('msg_' + Date.now()),
+      to: jid,
+      timestamp: new Date().toISOString()
+    });
+  } catch (err) {
+    console.error('API Send Message Error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 3. Send WhatsApp Media
+app.post('/api/v1/messages/send-media', validateApiKey, async (req, res) => {
+  try {
+    const { to, mediaUrl, base64, mimeType, caption, fileName } = req.body;
+
+    if (!to || (!mediaUrl && !base64)) {
+      return res.status(400).json({ error: 'Missing required fields: "to" and either "mediaUrl" or "base64" are required.' });
+    }
+
+    if (!sock || connectionStatus !== 'connected') {
+      return res.status(503).json({ error: 'WhatsApp socket is not connected.' });
+    }
+
+    let cleanNumber = String(to).replace(/[^0-9]/g, '');
+    let jid = String(to).includes('@') ? to : `${cleanNumber}@s.whatsapp.net`;
+
+    let buffer;
+    if (base64) {
+      const cleanB64 = base64.replace(/^data:[^;]+;base64,/, '');
+      buffer = Buffer.from(cleanB64, 'base64');
+    } else {
+      const fetchRes = await fetch(mediaUrl);
+      if (!fetchRes.ok) throw new Error(`Failed to download media from URL: ${fetchRes.statusText}`);
+      const arrayBuf = await fetchRes.arrayBuffer();
+      buffer = Buffer.from(arrayBuf);
+    }
+
+    const type = (mimeType || 'image/jpeg').toLowerCase();
+    let messagePayload = {};
+
+    if (type.startsWith('image/')) {
+      messagePayload = { image: buffer, caption: caption || '' };
+    } else if (type.startsWith('audio/')) {
+      messagePayload = { audio: buffer, mimetype: type, ptt: true };
+    } else {
+      messagePayload = { document: buffer, mimetype: type, fileName: fileName || 'document', caption: caption || '' };
+    }
+
+    const result = await sock.sendMessage(jid, messagePayload);
+    addLog(`📎 [REST API] Sent media to ${cleanNumber || jid}`, 'success', 'system');
+    broadcastStateUpdate();
+
+    res.json({
+      success: true,
+      messageId: result?.key?.id,
+      to: jid,
+      timestamp: new Date().toISOString()
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 4. List Joined Groups
+app.get('/api/v1/groups', validateApiKey, async (req, res) => {
+  try {
+    if (!sock || connectionStatus !== 'connected') {
+      return res.status(503).json({ error: 'WhatsApp socket is not connected.' });
+    }
+    const groups = await sock.groupFetchAllParticipating();
+    const groupList = Object.values(groups).map((g) => ({
+      id: g.id,
+      subject: g.subject,
+      size: g.size || g.participants?.length || 0,
+      creation: g.creation,
+      owner: g.owner
+    }));
+    res.json({ success: true, count: groupList.length, groups: groupList });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 5. Send Message to Group
+app.post('/api/v1/groups/send', validateApiKey, async (req, res) => {
+  try {
+    const { groupId, message } = req.body;
+    if (!groupId || !message) {
+      return res.status(400).json({ error: 'Fields "groupId" and "message" are required.' });
+    }
+    if (!sock || connectionStatus !== 'connected') {
+      return res.status(503).json({ error: 'WhatsApp socket is not connected.' });
+    }
+
+    const jid = groupId.includes('@g.us') ? groupId : `${groupId}@g.us`;
+    const parsedText = parseSpintax(message);
+    const result = await sock.sendMessage(jid, { text: parsedText });
+
+    stats.campaignMessagesSent++;
+    addLog(`👥 [REST API] Dispatched message to group (${jid})`, 'success', 'group');
+    broadcastStateUpdate();
+
+    res.json({
+      success: true,
+      messageId: result?.key?.id,
+      groupId: jid,
+      timestamp: new Date().toISOString()
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 6. Live Engine Stats
+app.get('/api/v1/stats', validateApiKey, (req, res) => {
+  res.json({
+    success: true,
+    stats,
+    connected: connectionStatus === 'connected',
+    phone: activePhone,
+    uptime: Math.floor(process.uptime())
+  });
+});
 
 // 1. Engine Status
 app.get('/api/status', (req, res) => {

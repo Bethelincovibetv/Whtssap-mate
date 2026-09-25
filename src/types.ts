@@ -109,3 +109,22 @@ export interface EngineStatusResponse {
   stats: EngineStats;
   campaign?: CampaignProgress;
 }
+
+export interface ApiKeyItem {
+  id: string;
+  name: string;
+  key: string;
+  createdAt: string;
+  lastUsedAt: string | null;
+  requestCount: number;
+  status: 'active' | 'revoked';
+  permissions: string[];
+}
+
+export interface WebhookConfig {
+  url: string;
+  enabled: boolean;
+  events: string[];
+  secret?: string;
+}
+
