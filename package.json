@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "tsx server.ts",
     "build": "vite build && cp -r dist/* public/",
-    "start": "node server.js",
+    "start": "node server.ts",
     "serve:ts": "tsx server.ts",
     "serve": "node server.js",
     "preview": "vite preview",
