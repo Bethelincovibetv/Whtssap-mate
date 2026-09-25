@@ -20,13 +20,13 @@ export const RenderDeployTab: React.FC = () => {
     name: whatsapp-growth-engine
     env: node
     plan: free
-    buildCommand: npm install
+    buildCommand: npm install --legacy-peer-deps && npm run build
     startCommand: node server.js
     envVars:
       - key: PORT
-        value: 3000
+        value: 10000
       - key: NODE_VERSION
-        value: 18.20.0
+        value: 20.18.0
       - key: GEMINI_API_KEY
         sync: false`;
 
