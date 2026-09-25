@@ -12,9 +12,15 @@ import {
   Building, 
   Headphones, 
   Save,
-  RotateCcw
+  RotateCcw,
+  Plus,
+  Trash2,
+  Sliders,
+  Filter,
+  CheckCircle2,
+  AlertTriangle
 } from 'lucide-react';
-import { EngineStatusResponse } from '../types';
+import { EngineStatusResponse, FallbackRule } from '../types';
 
 interface AiResponderTabProps {
   statusData: EngineStatusResponse | null;
@@ -71,12 +77,50 @@ Rules:
   }
 ];
 
-export const AiResponderTab: React.FC<AiResponderTabProps> = ({ statusData }) => {
+export const AiResponderTab: React.FC<AiResponderTabProps> = ({ statusData, onRefresh }) => {
   const [aiResponder, setAiResponder] = useState(statusData?.aiResponder ?? true);
+  const [aiTriggerMode, setAiTriggerMode] = useState<'all' | 'keywords_only'>(
+    statusData?.aiTriggerMode ?? 'all'
+  );
+  const [triggerKeywords, setTriggerKeywords] = useState<string[]>(
+    statusData?.triggerKeywords ?? ['price', 'info', 'buy', 'order', 'help', 'services', 'hi', 'hello']
+  );
+  const [newKeyword, setNewKeyword] = useState('');
+  
   const [systemPrompt, setSystemPrompt] = useState(
     statusData?.systemPrompt || PERSONA_TEMPLATES[0].prompt
   );
   const [geminiKey, setGeminiKey] = useState('');
+  const [typingDelaySeconds, setTypingDelaySeconds] = useState(
+    statusData?.typingDelaySeconds ?? 2
+  );
+
+  // Fallback Rule-Based Auto-Responses
+  const [fallbackRules, setFallbackRules] = useState<FallbackRule[]>(
+    statusData?.fallbackRules ?? [
+      {
+        id: 'rule_1',
+        keywords: ['price', 'pricing', 'cost', 'fee'],
+        reply: 'Hello! 👋 Our standard plans start from $19/mo. Check our full package options here: https://example.com/pricing',
+        enabled: true
+      },
+      {
+        id: 'rule_2',
+        keywords: ['support', 'help', 'issue', 'problem'],
+        reply: 'Hi there! 🛠️ Our team is ready to assist. Please describe the issue in detail and an agent will follow up right away.',
+        enabled: true
+      },
+      {
+        id: 'rule_3',
+        keywords: ['hours', 'location', 'address'],
+        reply: '📍 We are open Monday–Friday from 9:00 AM to 6:00 PM. You can also reach us anytime right here on WhatsApp!',
+        enabled: true
+      }
+    ]
+  );
+  const [newRuleKeywords, setNewRuleKeywords] = useState('');
+  const [newRuleReply, setNewRuleReply] = useState('');
+
   const [saving, setSaving] = useState(false);
   const [savedSuccess, setSavedSuccess] = useState(false);
 
@@ -106,31 +150,76 @@ export const AiResponderTab: React.FC<AiResponderTabProps> = ({ statusData }) =>
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           aiResponder: enabled,
+          aiTriggerMode,
+          triggerKeywords,
           systemPrompt,
-          geminiKey: geminiKey || undefined
+          geminiKey: geminiKey || undefined,
+          typingDelaySeconds,
+          fallbackRules
         })
       });
 
       if (res.ok) {
         setSavedSuccess(true);
         setTimeout(() => setSavedSuccess(false), 3000);
+        onRefresh();
       }
-    } catch (err) {
-      console.error('Failed to save AI config:', err);
+    } catch (e) {
+      console.error('Error saving AI config:', e);
     } finally {
       setSaving(false);
     }
   };
 
-  const handleSendTestMessage = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!testInput.trim() || testLoading) return;
+  const handleAddKeyword = () => {
+    const clean = newKeyword.trim().toLowerCase();
+    if (clean && !triggerKeywords.includes(clean)) {
+      setTriggerKeywords([...triggerKeywords, clean]);
+      setNewKeyword('');
+    }
+  };
 
-    const userMsg = testInput.trim();
-    const timeNow = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    
-    setTestChat(prev => [...prev, { sender: 'user', text: userMsg, time: timeNow }]);
+  const handleRemoveKeyword = (keyword: string) => {
+    setTriggerKeywords(triggerKeywords.filter(k => k !== keyword));
+  };
+
+  const handleAddFallbackRule = () => {
+    if (!newRuleKeywords.trim() || !newRuleReply.trim()) return;
+    const keywords = newRuleKeywords
+      .split(',')
+      .map(k => k.trim().toLowerCase())
+      .filter(Boolean);
+
+    const newRule: FallbackRule = {
+      id: 'rule_' + Date.now(),
+      keywords,
+      reply: newRuleReply.trim(),
+      enabled: true
+    };
+
+    setFallbackRules([...fallbackRules, newRule]);
+    setNewRuleKeywords('');
+    setNewRuleReply('');
+  };
+
+  const handleRemoveFallbackRule = (id: string) => {
+    setFallbackRules(fallbackRules.filter(r => r.id !== id));
+  };
+
+  const handleSendTestMessage = async () => {
+    if (!testInput.trim()) return;
+
+    const userMsg = testInput;
     setTestInput('');
+    setTestChat(prev => [
+      ...prev,
+      {
+        sender: 'user',
+        text: userMsg,
+        time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      }
+    ]);
+
     setTestLoading(true);
 
     try {
@@ -144,22 +233,22 @@ export const AiResponderTab: React.FC<AiResponderTabProps> = ({ statusData }) =>
       });
 
       const data = await res.json();
-      const replyText = data.reply || data.error || 'No response generated.';
+      const reply = data.reply || "Sorry, I couldn't generate a response. Please check your Gemini API key.";
 
       setTestChat(prev => [
         ...prev,
         {
           sender: 'ai',
-          text: replyText,
+          text: reply,
           time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
         }
       ]);
-    } catch (err: any) {
+    } catch (e) {
       setTestChat(prev => [
         ...prev,
         {
           sender: 'ai',
-          text: `[Error] ${err.message}`,
+          text: 'Error contacting AI backend simulation.',
           time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
         }
       ]);
@@ -171,212 +260,366 @@ export const AiResponderTab: React.FC<AiResponderTabProps> = ({ statusData }) =>
   return (
     <div className="space-y-6">
       
-      {/* Header Banner */}
-      <div className="p-6 rounded-2xl bg-[#111b21] border border-[#202c33] flex flex-col md:flex-row items-start md:items-center justify-between gap-4 shadow-xl">
-        <div className="flex items-center gap-3.5">
-          <div className="w-12 h-12 rounded-2xl bg-purple-500/20 text-purple-400 border border-purple-500/30 flex items-center justify-center">
-            <Bot className="w-6 h-6" />
+      {/* Master Toggle Banner */}
+      <div className="p-6 rounded-3xl bg-[#111b21] border border-[#202c33] flex flex-col md:flex-row items-start md:items-center justify-between gap-4 shadow-xl">
+        <div className="flex items-center gap-4">
+          <div className={`w-12 h-12 rounded-2xl flex items-center justify-center border transition-all ${
+            aiResponder
+              ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20 shadow-lg shadow-emerald-500/5'
+              : 'bg-slate-800/60 text-slate-500 border-slate-700'
+          }`}>
+            <BrainCircuit className="w-6 h-6" />
           </div>
           <div>
-            <h2 className="text-base font-bold text-white flex items-center gap-2">
-              Gemini AI Auto-Responder
-              <span className="text-xs bg-purple-500/20 text-purple-300 px-2.5 py-0.5 rounded-full border border-purple-500/30 font-mono">
-                Powered by Gemini 3.8 Flash
-              </span>
-            </h2>
-            <p className="text-xs text-slate-400">
-              Autonomous 24/7 AI representative for 1-on-1 private WhatsApp customer conversations.
+            <h3 className="text-base font-bold text-white flex items-center gap-2">
+              Gemini AI Auto-Responder & Inbound Manager
+              {aiResponder && (
+                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                  LIVE & ACTIVE
+                </span>
+              )}
+            </h3>
+            <p className="text-xs text-slate-400 mt-0.5">
+              Automatically replies to direct 1-on-1 customer messages with realistic typing indicator simulations.
             </p>
           </div>
         </div>
 
-        {/* Master AI Toggle */}
-        <div className="flex items-center gap-3 bg-[#0b141a] px-4 py-2 rounded-xl border border-[#202c33]">
-          <span className="text-xs font-semibold text-slate-300">AI Responder Status:</span>
-          <label className="relative inline-flex items-center cursor-pointer">
-            <input
-              type="checkbox"
-              checked={aiResponder}
-              onChange={(e) => {
-                setAiResponder(e.target.checked);
-                handleSave(e.target.checked);
-              }}
-              className="sr-only peer"
-            />
-            <div className="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-purple-600"></div>
-          </label>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => {
+              const nextState = !aiResponder;
+              setAiResponder(nextState);
+              handleSave(nextState);
+            }}
+            className={`px-5 py-2.5 rounded-xl font-bold text-xs transition-all shadow-lg cursor-pointer ${
+              aiResponder
+                ? 'bg-emerald-600 hover:bg-emerald-500 text-white'
+                : 'bg-slate-800 hover:bg-slate-700 text-slate-300'
+            }`}
+          >
+            {aiResponder ? 'Enabled (Turn Off)' : 'Disabled (Turn On)'}
+          </button>
         </div>
       </div>
 
+      {/* Main Settings Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-
-        {/* AI System Instructions & Configuration */}
-        <div className="lg:col-span-7 bg-[#111b21] rounded-2xl border border-[#202c33] p-6 shadow-xl space-y-5">
+        
+        {/* Left Column: AI Instructions, Triggers & Rules */}
+        <div className="lg:col-span-7 space-y-6">
           
-          {/* Persona Templates */}
-          <div>
-            <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-2.5">
-              Select Business Persona Preset
-            </label>
-            <div className="grid grid-cols-2 gap-2">
-              {PERSONA_TEMPLATES.map((tmpl) => {
-                const Icon = tmpl.icon;
-                const isSelected = systemPrompt === tmpl.prompt;
+          {/* Preset Persona Quick Select */}
+          <div className="p-6 rounded-2xl bg-[#111b21] border border-[#202c33] space-y-4">
+            <h4 className="font-bold text-white text-sm flex items-center gap-2">
+              <Sparkles className="w-4 h-4 text-emerald-400" />
+              1. Business Persona Presets
+            </h4>
+
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+              {PERSONA_TEMPLATES.map((item) => {
+                const Icon = item.icon;
+                const isSelected = systemPrompt === item.prompt;
                 return (
                   <button
-                    key={tmpl.id}
-                    type="button"
-                    onClick={() => setSystemPrompt(tmpl.prompt)}
-                    className={`p-3 rounded-xl border text-left transition-all cursor-pointer flex items-center gap-2.5 ${
+                    key={item.id}
+                    onClick={() => setSystemPrompt(item.prompt)}
+                    className={`p-3 rounded-xl border text-left flex flex-col justify-between transition-all cursor-pointer ${
                       isSelected
-                        ? 'bg-purple-500/10 border-purple-500 text-purple-200 shadow-md shadow-purple-950/40'
+                        ? 'bg-emerald-500/10 border-emerald-500 text-white'
                         : 'bg-[#0b141a] border-[#202c33] text-slate-400 hover:text-slate-200 hover:border-slate-700'
                     }`}
                   >
-                    <div className="w-7 h-7 rounded-lg bg-slate-800 flex items-center justify-center shrink-0">
-                      <Icon className="w-4 h-4 text-purple-400" />
-                    </div>
-                    <div className="truncate">
-                      <p className="text-xs font-bold truncate">{tmpl.name}</p>
-                    </div>
+                    <Icon className={`w-5 h-5 mb-2 ${isSelected ? 'text-emerald-400' : 'text-slate-500'}`} />
+                    <span className="text-xs font-semibold">{item.name}</span>
                   </button>
                 );
               })}
             </div>
+
+            <div>
+              <label className="text-xs font-semibold text-slate-300 mb-1.5 block">
+                System Prompt & Persona Instructions
+              </label>
+              <textarea
+                value={systemPrompt}
+                onChange={(e) => setSystemPrompt(e.target.value)}
+                rows={5}
+                className="w-full bg-[#0b141a] border border-[#202c33] focus:border-emerald-500 rounded-xl p-3 text-xs text-white placeholder-slate-600 outline-none font-mono"
+                placeholder="Describe how the AI should answer customer inquiries..."
+              />
+            </div>
           </div>
 
-          {/* System Prompt Textarea */}
-          <div>
-            <div className="flex items-center justify-between mb-2">
-              <label className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
-                <BrainCircuit className="w-3.5 h-3.5 text-purple-400" />
-                <span>AI System Instructions & Business Rules</span>
-              </label>
+          {/* Inbound Trigger Filter Modes */}
+          <div className="p-6 rounded-2xl bg-[#111b21] border border-[#202c33] space-y-4">
+            <h4 className="font-bold text-white text-sm flex items-center gap-2">
+              <Filter className="w-4 h-4 text-emerald-400" />
+              2. Inbound Trigger Filtering
+            </h4>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <button
-                type="button"
-                onClick={() => setSystemPrompt(PERSONA_TEMPLATES[0].prompt)}
-                className="text-[11px] text-slate-400 hover:text-purple-400 flex items-center gap-1"
+                onClick={() => setAiTriggerMode('all')}
+                className={`p-3.5 rounded-xl border text-left transition-all cursor-pointer ${
+                  aiTriggerMode === 'all'
+                    ? 'bg-emerald-500/10 border-emerald-500 text-white'
+                    : 'bg-[#0b141a] border-[#202c33] text-slate-400'
+                }`}
               >
-                <RotateCcw className="w-3 h-3" />
-                <span>Reset to default</span>
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-xs font-bold text-white">All Direct Messages</span>
+                  {aiTriggerMode === 'all' && <Check className="w-4 h-4 text-emerald-400" />}
+                </div>
+                <p className="text-[11px] text-slate-400">
+                  Respond to any incoming customer DM automatically (excluding group chats).
+                </p>
+              </button>
+
+              <button
+                onClick={() => setAiTriggerMode('keywords_only')}
+                className={`p-3.5 rounded-xl border text-left transition-all cursor-pointer ${
+                  aiTriggerMode === 'keywords_only'
+                    ? 'bg-emerald-500/10 border-emerald-500 text-white'
+                    : 'bg-[#0b141a] border-[#202c33] text-slate-400'
+                }`}
+              >
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-xs font-bold text-white">Keyword Trigger Only</span>
+                  {aiTriggerMode === 'keywords_only' && <Check className="w-4 h-4 text-emerald-400" />}
+                </div>
+                <p className="text-[11px] text-slate-400">
+                  Only trigger auto-response when the incoming message matches specific keywords.
+                </p>
               </button>
             </div>
 
-            <textarea
-              value={systemPrompt}
-              onChange={(e) => setSystemPrompt(e.target.value)}
-              rows={8}
-              placeholder="Define who the AI is, what products or pricing it should offer, and how it should close leads..."
-              className="w-full bg-[#0b141a] border border-[#202c33] focus:border-purple-500 focus:ring-1 focus:ring-purple-500 rounded-xl p-3.5 text-white font-mono text-xs placeholder-slate-600 outline-none transition-all leading-relaxed"
-            />
-            <p className="text-[11px] text-slate-500 mt-1">
-              The AI dynamically combines this prompt with the customer's WhatsApp profile name and context.
-            </p>
-          </div>
+            {aiTriggerMode === 'keywords_only' && (
+              <div className="p-3.5 rounded-xl bg-[#0b141a] border border-[#202c33] space-y-3">
+                <label className="text-xs font-semibold text-slate-300 block">
+                  Active Trigger Keywords
+                </label>
+                <div className="flex flex-wrap gap-1.5">
+                  {triggerKeywords.map((kw) => (
+                    <span
+                      key={kw}
+                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#111b21] border border-[#202c33] text-xs font-mono text-emerald-400"
+                    >
+                      {kw}
+                      <button
+                        onClick={() => handleRemoveKeyword(kw)}
+                        className="text-slate-500 hover:text-rose-400 ml-1 cursor-pointer"
+                      >
+                        ✕
+                      </button>
+                    </span>
+                  ))}
+                </div>
 
-          {/* Optional Gemini API Key override */}
-          <div>
-            <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-2 flex items-center gap-1.5">
-              <Key className="w-3.5 h-3.5 text-purple-400" />
-              <span>Gemini API Key (Optional Override)</span>
-            </label>
-            <input
-              type="password"
-              value={geminiKey}
-              onChange={(e) => setGeminiKey(e.target.value)}
-              placeholder="Leave empty to use server GEMINI_API_KEY"
-              className="w-full bg-[#0b141a] border border-[#202c33] focus:border-purple-500 focus:ring-1 focus:ring-purple-500 rounded-xl px-4 py-2.5 text-white font-mono text-xs placeholder-slate-600 outline-none transition-all"
-            />
-            <p className="text-[11px] text-slate-500 mt-1">
-              By default, the server securely reads <code className="text-purple-400 font-mono">process.env.GEMINI_API_KEY</code>.
-            </p>
-          </div>
-
-          {/* Save Button */}
-          <button
-            onClick={() => handleSave()}
-            disabled={saving}
-            className="w-full py-3 px-4 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs transition-all shadow-lg shadow-purple-950/40 flex items-center justify-center gap-2 cursor-pointer"
-          >
-            {saving ? (
-              <span className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-            ) : savedSuccess ? (
-              <Check className="w-3.5 h-3.5" />
-            ) : (
-              <Save className="w-3.5 h-3.5" />
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={newKeyword}
+                    onChange={(e) => setNewKeyword(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && handleAddKeyword()}
+                    placeholder="Add keyword (e.g. quote, book, catalog)..."
+                    className="flex-1 bg-[#111b21] border border-[#202c33] focus:border-emerald-500 rounded-xl px-3 py-1.5 text-xs text-white placeholder-slate-600 outline-none"
+                  />
+                  <button
+                    onClick={handleAddKeyword}
+                    className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold transition-all cursor-pointer"
+                  >
+                    Add
+                  </button>
+                </div>
+              </div>
             )}
-            <span>{savedSuccess ? 'Settings Saved Successfully!' : 'Save AI Instructions'}</span>
-          </button>
+          </div>
+
+          {/* Fallback Rule-Based Responses */}
+          <div className="p-6 rounded-2xl bg-[#111b21] border border-[#202c33] space-y-4">
+            <h4 className="font-bold text-white text-sm flex items-center gap-2">
+              <MessageSquare className="w-4 h-4 text-emerald-400" />
+              3. Fallback Instant Rule Responses (Works Even Without API Key)
+            </h4>
+
+            <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
+              {fallbackRules.map((rule) => (
+                <div
+                  key={rule.id}
+                  className="p-3 rounded-xl bg-[#0b141a] border border-[#202c33] flex items-start justify-between gap-3"
+                >
+                  <div className="space-y-1">
+                    <div className="flex flex-wrap gap-1">
+                      {rule.keywords.map(kw => (
+                        <span key={kw} className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                          {kw}
+                        </span>
+                      ))}
+                    </div>
+                    <p className="text-xs text-slate-300 line-clamp-2">{rule.reply}</p>
+                  </div>
+                  <button
+                    onClick={() => handleRemoveFallbackRule(rule.id)}
+                    className="text-slate-500 hover:text-rose-400 p-1 cursor-pointer"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
+              ))}
+            </div>
+
+            {/* Add New Rule */}
+            <div className="p-3 rounded-xl bg-[#0b141a] border border-[#202c33] space-y-2">
+              <input
+                type="text"
+                value={newRuleKeywords}
+                onChange={(e) => setNewRuleKeywords(e.target.value)}
+                placeholder="Trigger keywords (comma separated, e.g: address, location, find)"
+                className="w-full bg-[#111b21] border border-[#202c33] rounded-lg px-3 py-1.5 text-xs text-white placeholder-slate-600 outline-none"
+              />
+              <textarea
+                value={newRuleReply}
+                onChange={(e) => setNewRuleReply(e.target.value)}
+                rows={2}
+                placeholder="Instant response text..."
+                className="w-full bg-[#111b21] border border-[#202c33] rounded-lg p-2 text-xs text-white placeholder-slate-600 outline-none"
+              />
+              <button
+                onClick={handleAddFallbackRule}
+                disabled={!newRuleKeywords.trim() || !newRuleReply.trim()}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold transition-all disabled:opacity-40 cursor-pointer"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                Add Fallback Rule
+              </button>
+            </div>
+          </div>
+
+          {/* Typing Presence Simulator & API Key */}
+          <div className="p-6 rounded-2xl bg-[#111b21] border border-[#202c33] space-y-4">
+            <h4 className="font-bold text-white text-sm flex items-center gap-2">
+              <Sliders className="w-4 h-4 text-emerald-400" />
+              4. Human Typing Presence & Model Configuration
+            </h4>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className="text-xs font-semibold text-slate-300 mb-1.5 block">
+                  Typing Indicator Duration ({typingDelaySeconds}s)
+                </label>
+                <input
+                  type="range"
+                  min="1"
+                  max="5"
+                  value={typingDelaySeconds}
+                  onChange={(e) => setTypingDelaySeconds(Number(e.target.value))}
+                  className="w-full accent-emerald-500 cursor-pointer"
+                />
+                <p className="text-[11px] text-slate-500 mt-1">
+                  Shows "typing..." in WhatsApp for realistic human behavior.
+                </p>
+              </div>
+
+              <div>
+                <label className="text-xs font-semibold text-slate-300 mb-1.5 block">
+                  Custom Gemini API Key (Optional)
+                </label>
+                <input
+                  type="password"
+                  value={geminiKey}
+                  onChange={(e) => setGeminiKey(e.target.value)}
+                  placeholder="Leave empty to use GEMINI_API_KEY env"
+                  className="w-full bg-[#0b141a] border border-[#202c33] focus:border-emerald-500 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-600 outline-none"
+                />
+              </div>
+            </div>
+
+            {/* Save Button */}
+            <div className="flex items-center justify-between pt-2 border-t border-[#202c33]">
+              {savedSuccess ? (
+                <span className="text-xs text-emerald-400 font-semibold flex items-center gap-1.5">
+                  <CheckCircle2 className="w-4 h-4" /> Settings Saved & Synced!
+                </span>
+              ) : (
+                <span className="text-xs text-slate-500">Auto-applies to live WhatsApp socket</span>
+              )}
+
+              <button
+                onClick={() => handleSave(aiResponder)}
+                disabled={saving}
+                className="flex items-center gap-2 px-6 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs transition-all shadow-lg cursor-pointer"
+              >
+                <Save className="w-3.5 h-3.5" />
+                {saving ? 'Saving...' : 'Save Configuration'}
+              </button>
+            </div>
+          </div>
+
         </div>
 
-        {/* Live AI Sandbox Simulator */}
-        <div className="lg:col-span-5 bg-[#111b21] rounded-2xl border border-[#202c33] p-6 shadow-xl flex flex-col justify-between">
-          <div>
-            <div className="flex items-center justify-between mb-3">
+        {/* Right Column: AI Live Testing Sandbox */}
+        <div className="lg:col-span-5 space-y-6">
+          <div className="p-6 rounded-2xl bg-[#111b21] border border-[#202c33] flex flex-col h-full min-h-[500px]">
+            <div className="flex items-center justify-between pb-4 border-b border-[#202c33] mb-4">
               <div className="flex items-center gap-2">
-                <MessageSquare className="w-4 h-4 text-purple-400" />
-                <h3 className="text-sm font-bold text-white">AI Sandbox Simulator</h3>
+                <Bot className="w-5 h-5 text-emerald-400" />
+                <h4 className="font-bold text-white text-sm">Interactive AI Simulator</h4>
               </div>
-              <span className="text-[10px] text-purple-400 bg-purple-500/10 px-2 py-0.5 rounded border border-purple-500/20 font-mono">
-                Interactive Test
-              </span>
+              <button
+                onClick={() => setTestChat([])}
+                className="p-1 rounded-lg text-slate-500 hover:text-slate-300 text-xs flex items-center gap-1 cursor-pointer"
+              >
+                <RotateCcw className="w-3 h-3" /> Clear
+              </button>
             </div>
-            <p className="text-xs text-slate-400 mb-4">
-              Test how your AI replies to simulated WhatsApp customer inquiries in real time.
-            </p>
 
-            {/* Chat Box Mockup */}
-            <div className="bg-[#0b141a] rounded-2xl border border-[#202c33] p-4 h-[320px] overflow-y-auto space-y-3 font-sans text-xs">
+            {/* Chat Bubble Stream */}
+            <div className="flex-1 overflow-y-auto space-y-3 pr-1 mb-4">
               {testChat.map((msg, index) => (
                 <div
                   key={index}
                   className={`flex flex-col ${msg.sender === 'user' ? 'items-end' : 'items-start'}`}
                 >
                   <div
-                    className={`max-w-[85%] rounded-2xl p-3 shadow-md ${
+                    className={`max-w-[85%] rounded-2xl px-3.5 py-2.5 text-xs shadow-md whitespace-pre-wrap ${
                       msg.sender === 'user'
-                        ? 'bg-[#005c4b] text-white rounded-br-none'
-                        : 'bg-[#202c33] text-slate-100 rounded-bl-none border border-slate-700/50'
+                        ? 'bg-[#005c4b] text-white rounded-br-xs'
+                        : 'bg-[#202c33] text-slate-100 rounded-bl-xs'
                     }`}
                   >
-                    <div className="text-[10px] font-bold text-emerald-300/80 mb-0.5">
-                      {msg.sender === 'user' ? 'Customer' : 'Gemini AI Rep'}
-                    </div>
-                    <p className="leading-relaxed whitespace-pre-wrap">{msg.text}</p>
-                    <p className="text-[9px] text-slate-400 text-right mt-1">{msg.time}</p>
+                    {msg.text}
                   </div>
+                  <span className="text-[10px] text-slate-500 mt-1 px-1">{msg.time}</span>
                 </div>
               ))}
-
               {testLoading && (
-                <div className="flex items-start">
-                  <div className="bg-[#202c33] rounded-2xl rounded-bl-none p-3 border border-slate-700/50 text-slate-400 text-xs flex items-center gap-2">
-                    <span className="w-2 h-2 rounded-full bg-purple-400 animate-ping"></span>
-                    <span>AI is typing response...</span>
-                  </div>
+                <div className="flex items-center gap-2 text-xs text-slate-400 bg-[#202c33] max-w-[70%] px-3.5 py-2.5 rounded-2xl rounded-bl-xs animate-pulse">
+                  <Bot className="w-4 h-4 text-emerald-400 animate-spin" />
+                  Generating Gemini reply...
                 </div>
               )}
             </div>
-          </div>
 
-          {/* Test Input Form */}
-          <form onSubmit={handleSendTestMessage} className="mt-4 flex gap-2">
-            <input
-              type="text"
-              value={testInput}
-              onChange={(e) => setTestInput(e.target.value)}
-              placeholder="Type a test customer message..."
-              disabled={testLoading}
-              className="flex-1 bg-[#0b141a] border border-[#202c33] focus:border-purple-500 rounded-xl px-3.5 py-2.5 text-white text-xs outline-none transition-all placeholder-slate-600 font-sans"
-            />
-            <button
-              type="submit"
-              disabled={testLoading || !testInput.trim()}
-              className="px-4 py-2.5 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white rounded-xl font-semibold text-xs transition-all cursor-pointer flex items-center justify-center"
-            >
-              <Send className="w-3.5 h-3.5" />
-            </button>
-          </form>
+            {/* Chat Input */}
+            <div className="pt-2 border-t border-[#202c33] flex items-center gap-2">
+              <input
+                type="text"
+                value={testInput}
+                onChange={(e) => setTestInput(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleSendTestMessage()}
+                placeholder="Test customer message..."
+                className="flex-1 bg-[#0b141a] border border-[#202c33] focus:border-emerald-500 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-600 outline-none"
+              />
+              <button
+                onClick={handleSendTestMessage}
+                disabled={testLoading || !testInput.trim()}
+                className="p-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white disabled:opacity-40 transition-all cursor-pointer"
+              >
+                <Send className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
         </div>
 
       </div>

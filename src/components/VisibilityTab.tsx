@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { 
   Eye, 
   Sparkles, 
@@ -9,9 +9,12 @@ import {
   TrendingUp, 
   ShieldCheck,
   Zap,
-  Save
+  Save,
+  RefreshCw,
+  Users,
+  Smartphone
 } from 'lucide-react';
-import { EngineStatusResponse } from '../types';
+import { EngineStatusResponse, ViewedStatusItem } from '../types';
 
 interface VisibilityTabProps {
   statusData: EngineStatusResponse | null;
@@ -20,7 +23,7 @@ interface VisibilityTabProps {
 
 const AVAILABLE_EMOJIS = ['🔥', '👏', '❤️', '🚀', '😍', '⚡', '💯', '🙌', '✨', '🎉', '💪', '🏆', '💎', '🌟', '🎯'];
 
-export const VisibilityTab: React.FC<VisibilityTabProps> = ({ statusData }) => {
+export const VisibilityTab: React.FC<VisibilityTabProps> = ({ statusData, onRefresh }) => {
   const [autoView, setAutoView] = useState(statusData?.autoView ?? true);
   const [autoReact, setAutoReact] = useState(statusData?.autoReact ?? true);
   const [reactionEmojis, setReactionEmojis] = useState<string[]>(
@@ -29,6 +32,31 @@ export const VisibilityTab: React.FC<VisibilityTabProps> = ({ statusData }) => {
   const [viewDelay, setViewDelay] = useState(statusData?.viewDelaySeconds || 2);
   const [saving, setSaving] = useState(false);
   const [savedSuccess, setSavedSuccess] = useState(false);
+
+  // Live Viewed Status Feed
+  const [viewedFeed, setViewedFeed] = useState<ViewedStatusItem[]>([]);
+  const [loadingFeed, setLoadingFeed] = useState(false);
+
+  const fetchViewedFeed = useCallback(async () => {
+    try {
+      setLoadingFeed(true);
+      const res = await fetch('/api/status/viewed-log');
+      const data = await res.json();
+      if (data.statuses) {
+        setViewedFeed(data.statuses);
+      }
+    } catch (e) {
+      console.error('Failed to fetch viewed feed', e);
+    } finally {
+      setLoadingFeed(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchViewedFeed();
+    const interval = setInterval(fetchViewedFeed, 5000);
+    return () => clearInterval(interval);
+  }, [fetchViewedFeed]);
 
   const toggleEmoji = (emoji: string) => {
     if (reactionEmojis.includes(emoji)) {
@@ -59,6 +87,7 @@ export const VisibilityTab: React.FC<VisibilityTabProps> = ({ statusData }) => {
       if (res.ok) {
         setSavedSuccess(true);
         setTimeout(() => setSavedSuccess(false), 3000);
+        onRefresh();
       }
     } catch (err) {
       console.error('Failed to update visibility settings:', err);
@@ -100,121 +129,105 @@ export const VisibilityTab: React.FC<VisibilityTabProps> = ({ statusData }) => {
         </button>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-
-        {/* Feature 1: Auto-View Stories */}
-        <div className="bg-[#111b21] rounded-2xl border border-[#202c33] p-6 shadow-xl flex flex-col justify-between space-y-5">
-          <div>
-            <div className="flex items-center justify-between mb-3">
+      {/* Main Grid */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+        
+        {/* Left Column: Toggles & Emoji Customizer */}
+        <div className="lg:col-span-7 space-y-6">
+          
+          {/* Status Auto-Viewer Card */}
+          <div className="p-6 rounded-2xl bg-[#111b21] border border-[#202c33] space-y-4">
+            <div className="flex items-start justify-between">
               <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl bg-blue-500/10 text-blue-400 border border-blue-500/30 flex items-center justify-center">
+                <div className="w-10 h-10 rounded-xl bg-blue-500/10 text-blue-400 flex items-center justify-center border border-blue-500/20">
                   <Eye className="w-5 h-5" />
                 </div>
                 <div>
-                  <h3 className="text-sm font-bold text-white">Auto-View Statuses</h3>
-                  <p className="text-[11px] text-slate-400">Appear first in your leads' viewers list</p>
+                  <h3 className="font-bold text-white text-sm">Status Auto-Viewer (Ghost Mode)</h3>
+                  <p className="text-xs text-slate-400">Instantly marks all contact stories as viewed.</p>
                 </div>
               </div>
 
-              {/* Toggle Switch */}
               <label className="relative inline-flex items-center cursor-pointer">
                 <input
                   type="checkbox"
                   checked={autoView}
                   onChange={(e) => {
-                    setAutoView(e.target.checked);
-                    handleSaveConfig(e.target.checked, autoReact);
+                    const checked = e.target.checked;
+                    setAutoView(checked);
+                    handleSaveConfig(checked, autoReact);
                   }}
                   className="sr-only peer"
                 />
-                <div className="w-12 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-500"></div>
+                <div className="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-500"></div>
               </label>
             </div>
 
-            <p className="text-xs text-slate-300 leading-relaxed">
-              When enabled, the engine immediately marks new incoming status stories as read (`readMessages`). Your profile photo and name appear continuously on your leads' story viewers, driving organic recall and inbound chats.
-            </p>
-
-            <div className="mt-5 space-y-3">
-              <div className="flex items-center justify-between text-xs">
-                <span className="text-slate-400 flex items-center gap-1.5">
-                  <Clock className="w-3.5 h-3.5 text-blue-400" />
-                  <span>Viewing Delay Simulation:</span>
+            <div className="pt-3 border-t border-[#202c33] space-y-2">
+              <div className="flex items-center justify-between text-xs text-slate-300">
+                <span className="flex items-center gap-1.5">
+                  <Clock className="w-3.5 h-3.5 text-slate-500" />
+                  View Delay Buffer
                 </span>
-                <span className="font-mono text-emerald-400 font-bold">{viewDelay}s</span>
+                <span className="font-mono text-emerald-400">{viewDelay} seconds</span>
               </div>
               <input
                 type="range"
-                min={1}
-                max={15}
+                min="1"
+                max="10"
                 value={viewDelay}
                 onChange={(e) => setViewDelay(Number(e.target.value))}
-                className="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-emerald-500"
+                className="w-full accent-emerald-500 cursor-pointer"
               />
-              <p className="text-[11px] text-slate-500">
-                Adds a small natural jitter (1-15s) so your views look 100% human and organic to WhatsApp algorithms.
-              </p>
+              <p className="text-[10px] text-slate-500">Simulates human reaction time before marking story read.</p>
             </div>
           </div>
 
-          <div className="p-3.5 rounded-xl bg-[#0b141a] border border-[#202c33] flex items-center justify-between text-xs">
-            <span className="text-slate-400">Total Statuses Viewed:</span>
-            <span className="font-mono text-emerald-400 font-bold text-sm">
-              {statusData?.stats?.statusesViewed || 0}
-            </span>
-          </div>
-        </div>
-
-        {/* Feature 2: Auto-React to Stories */}
-        <div className="bg-[#111b21] rounded-2xl border border-[#202c33] p-6 shadow-xl flex flex-col justify-between space-y-5">
-          <div>
-            <div className="flex items-center justify-between mb-3">
+          {/* Smart Auto-Reactions Card */}
+          <div className="p-6 rounded-2xl bg-[#111b21] border border-[#202c33] space-y-4">
+            <div className="flex items-start justify-between">
               <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl bg-amber-500/10 text-amber-400 border border-amber-500/30 flex items-center justify-center">
+                <div className="w-10 h-10 rounded-xl bg-amber-500/10 text-amber-400 flex items-center justify-center border border-amber-500/20">
                   <Sparkles className="w-5 h-5" />
                 </div>
                 <div>
-                  <h3 className="text-sm font-bold text-white">Auto-React to Stories</h3>
-                  <p className="text-[11px] text-slate-400">Randomized warm emoji reactions</p>
+                  <h3 className="font-bold text-white text-sm">Smart Story Auto-Reactions</h3>
+                  <p className="text-xs text-slate-400">Randomly selects from your customized reaction pool.</p>
                 </div>
               </div>
 
-              {/* Toggle Switch */}
               <label className="relative inline-flex items-center cursor-pointer">
                 <input
                   type="checkbox"
                   checked={autoReact}
                   onChange={(e) => {
-                    setAutoReact(e.target.checked);
-                    handleSaveConfig(autoView, e.target.checked);
+                    const checked = e.target.checked;
+                    setAutoReact(checked);
+                    handleSaveConfig(autoView, checked);
                   }}
                   className="sr-only peer"
                 />
-                <div className="w-12 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-amber-500"></div>
+                <div className="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-500"></div>
               </label>
             </div>
 
-            <p className="text-xs text-slate-300 leading-relaxed">
-              Sends an instant WhatsApp story reaction using a randomly chosen emoji from your active reaction pool.
-            </p>
-
-            {/* Reaction Pool Selector */}
-            <div className="mt-4">
-              <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-2">
-                Active Reaction Emojis Pool (Click to toggle)
+            {/* Custom Emoji Pool Editor */}
+            <div className="pt-3 border-t border-[#202c33] space-y-3">
+              <label className="text-xs font-semibold text-slate-300 block">
+                Active Emoji Reaction Pool ({reactionEmojis.length} Selected)
               </label>
+
               <div className="flex flex-wrap gap-2">
                 {AVAILABLE_EMOJIS.map((emoji) => {
                   const isSelected = reactionEmojis.includes(emoji);
                   return (
                     <button
                       key={emoji}
-                      type="button"
                       onClick={() => toggleEmoji(emoji)}
-                      className={`w-10 h-10 rounded-xl text-lg flex items-center justify-center transition-all cursor-pointer ${
+                      className={`w-10 h-10 rounded-xl flex items-center justify-center text-lg transition-all cursor-pointer ${
                         isSelected
-                          ? 'bg-amber-500/20 border-2 border-amber-500 text-white scale-105 shadow-md shadow-amber-950/40'
-                          : 'bg-[#0b141a] border border-[#202c33] opacity-40 hover:opacity-80'
+                          ? 'bg-emerald-500/20 border-2 border-emerald-500 shadow-md shadow-emerald-500/10 scale-105'
+                          : 'bg-[#0b141a] border border-[#202c33] opacity-50 hover:opacity-100'
                       }`}
                     >
                       {emoji}
@@ -225,27 +238,66 @@ export const VisibilityTab: React.FC<VisibilityTabProps> = ({ statusData }) => {
             </div>
           </div>
 
-          <div className="p-3.5 rounded-xl bg-[#0b141a] border border-[#202c33] flex items-center justify-between text-xs">
-            <span className="text-slate-400">Total Reactions Sent:</span>
-            <span className="font-mono text-amber-400 font-bold text-sm">
-              {statusData?.stats?.reactionsSent || 0}
-            </span>
+        </div>
+
+        {/* Right Column: Live Feed of Viewed Stories */}
+        <div className="lg:col-span-5 space-y-6">
+          <div className="p-6 rounded-2xl bg-[#111b21] border border-[#202c33] flex flex-col h-full min-h-[420px]">
+            <div className="flex items-center justify-between pb-4 border-b border-[#202c33] mb-4">
+              <div className="flex items-center gap-2">
+                <Eye className="w-4 h-4 text-blue-400" />
+                <h4 className="font-bold text-white text-sm">Recent Contact Stories Processed</h4>
+              </div>
+              <button
+                onClick={fetchViewedFeed}
+                className="p-1.5 rounded-lg bg-[#0b141a] hover:bg-[#202c33] text-slate-400 hover:text-emerald-400 transition-all cursor-pointer"
+                title="Refresh feed"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${loadingFeed ? 'animate-spin text-emerald-400' : ''}`} />
+              </button>
+            </div>
+
+            {/* Stories Feed Stream */}
+            <div className="flex-1 overflow-y-auto space-y-2 pr-1 max-h-[380px]">
+              {viewedFeed.length === 0 ? (
+                <div className="py-16 text-center text-slate-500 text-xs">
+                  <Smartphone className="w-8 h-8 mx-auto mb-2 opacity-40 text-slate-600" />
+                  <p>No contact stories processed yet.</p>
+                  <p className="text-[10px] text-slate-600 mt-1">When contacts post statuses, they will be viewed and reacted to here automatically.</p>
+                </div>
+              ) : (
+                viewedFeed.map((item) => (
+                  <div
+                    key={item.id}
+                    className="p-3 rounded-xl bg-[#0b141a] border border-[#202c33] flex items-center justify-between gap-3"
+                  >
+                    <div className="flex items-center gap-3 truncate">
+                      <div className="w-8 h-8 rounded-full bg-blue-500/10 text-blue-400 font-bold text-xs flex items-center justify-center shrink-0">
+                        {item.senderName ? item.senderName.slice(0, 2).toUpperCase() : 'WA'}
+                      </div>
+                      <div className="truncate">
+                        <p className="text-xs font-semibold text-white truncate">{item.senderName || 'Contact'}</p>
+                        <p className="text-[10px] text-slate-500 font-mono">+{item.senderPhone}</p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0">
+                      {item.reactedEmoji && (
+                        <span className="text-sm bg-[#111b21] p-1.5 rounded-lg border border-[#202c33]">
+                          {item.reactedEmoji}
+                        </span>
+                      )}
+                      <span className="text-[10px] text-slate-500 font-mono">
+                        {new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </span>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
           </div>
         </div>
 
-      </div>
-
-      {/* Growth Strategy Insights Banner */}
-      <div className="p-5 rounded-2xl bg-[#111b21] border border-[#202c33] flex items-start gap-4">
-        <div className="w-10 h-10 rounded-xl bg-emerald-500/10 text-emerald-400 flex items-center justify-center shrink-0 mt-0.5">
-          <TrendingUp className="w-5 h-5" />
-        </div>
-        <div className="space-y-1">
-          <h4 className="text-xs font-bold text-white">How this drives 5-10x more inbound sales:</h4>
-          <p className="text-xs text-slate-400 leading-relaxed">
-            WhatsApp contacts are accustomed to friends and warm connections viewing and reacting to their statuses. When your business profile automatically interacts with their stories, contacts remember you, click on your profile, and start direct chats asking about your offers.
-          </p>
-        </div>
       </div>
 
     </div>

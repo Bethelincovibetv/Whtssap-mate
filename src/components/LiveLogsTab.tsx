@@ -11,35 +11,65 @@ import {
   Eye, 
   Sparkles, 
   Bot,
-  RefreshCw
+  RefreshCw,
+  FileSpreadsheet,
+  FileCode,
+  Layers,
+  Send,
+  Users
 } from 'lucide-react';
-import { ActivityLog } from '../types';
+import { ActivityLog, EngineStats } from '../types';
 
 interface LiveLogsTabProps {
   logs: ActivityLog[];
+  stats?: EngineStats;
   onClear: () => void;
   onRefresh: () => void;
 }
 
-export const LiveLogsTab: React.FC<LiveLogsTabProps> = ({ logs, onClear, onRefresh }) => {
+export const LiveLogsTab: React.FC<LiveLogsTabProps> = ({ logs, stats, onClear, onRefresh }) => {
   const [search, setSearch] = useState('');
   const [filterType, setFilterType] = useState<string>('all');
+  const [filterCategory, setFilterCategory] = useState<string>('all');
 
   const filteredLogs = logs.filter(log => {
     const matchesSearch = log.message.toLowerCase().includes(search.toLowerCase());
-    const matchesFilter = filterType === 'all' || log.type === filterType;
-    return matchesSearch && matchesFilter;
+    const matchesType = filterType === 'all' || log.type === filterType;
+    const matchesCategory = filterCategory === 'all' || log.category === filterCategory;
+    return matchesSearch && matchesType && matchesCategory;
   });
 
-  const exportLogs = () => {
+  const exportLogsAsText = () => {
     const text = logs
-      .map(l => `[${l.timestamp}] [${l.type.toUpperCase()}] ${l.message}`)
+      .map(l => `[${l.timestamp}] [${(l.type || 'INFO').toUpperCase()}] ${l.message}`)
       .join('\n');
-    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+    downloadBlob(text, `whatsapp-engine-logs-${new Date().toISOString().slice(0, 10)}.txt`, 'text/plain');
+  };
+
+  const exportLogsAsCSV = () => {
+    const headers = ['ID', 'Timestamp', 'Level', 'Category', 'Message'];
+    const rows = logs.map(l => [
+      `"${l.id}"`,
+      `"${l.timestamp}"`,
+      `"${l.type || 'info'}"`,
+      `"${l.category || 'system'}"`,
+      `"${l.message.replace(/"/g, '""')}"`
+    ]);
+    const csvContent = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+    downloadBlob(csvContent, `whatsapp-audit-logs-${new Date().toISOString().slice(0, 10)}.csv`, 'text/csv');
+  };
+
+  const exportLogsAsJSON = () => {
+    const jsonStr = JSON.stringify(logs, null, 2);
+    downloadBlob(jsonStr, `whatsapp-audit-logs-${new Date().toISOString().slice(0, 10)}.json`, 'application/json');
+  };
+
+  const downloadBlob = (content: string, filename: string, mimeType: string) => {
+    const blob = new Blob([content], { type: `${mimeType};charset=utf-8` });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `whatsapp-engine-logs-${new Date().toISOString().slice(0, 10)}.txt`;
+    a.download = filename;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -60,28 +90,74 @@ export const LiveLogsTab: React.FC<LiveLogsTabProps> = ({ logs, onClear, onRefre
   };
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-6">
       
-      {/* Controls Bar */}
-      <div className="p-4 rounded-2xl bg-[#111b21] border border-[#202c33] flex flex-col md:flex-row items-center justify-between gap-4 shadow-xl">
-        <div className="flex items-center gap-3 w-full md:w-auto">
-          <div className="relative flex-1 md:w-64">
+      {/* Live Analytics Dashboard Cards */}
+      {stats && (
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+          <div className="p-4 rounded-2xl bg-[#111b21] border border-[#202c33]">
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-[11px] text-slate-400 font-medium">Stories Viewed</span>
+              <Eye className="w-3.5 h-3.5 text-blue-400" />
+            </div>
+            <p className="text-xl font-bold text-white">{stats.statusesViewed.toLocaleString()}</p>
+          </div>
+
+          <div className="p-4 rounded-2xl bg-[#111b21] border border-[#202c33]">
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-[11px] text-slate-400 font-medium">Auto Reactions</span>
+              <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+            </div>
+            <p className="text-xl font-bold text-amber-400">{stats.reactionsSent.toLocaleString()}</p>
+          </div>
+
+          <div className="p-4 rounded-2xl bg-[#111b21] border border-[#202c33]">
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-[11px] text-slate-400 font-medium">Group Messages</span>
+              <Users className="w-3.5 h-3.5 text-emerald-400" />
+            </div>
+            <p className="text-xl font-bold text-emerald-400">{stats.campaignMessagesSent.toLocaleString()}</p>
+          </div>
+
+          <div className="p-4 rounded-2xl bg-[#111b21] border border-[#202c33]">
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-[11px] text-slate-400 font-medium">AI Inbound Replies</span>
+              <Bot className="w-3.5 h-3.5 text-purple-400" />
+            </div>
+            <p className="text-xl font-bold text-purple-400">{stats.aiRepliesSent.toLocaleString()}</p>
+          </div>
+
+          <div className="p-4 rounded-2xl bg-[#111b21] border border-[#202c33]">
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-[11px] text-slate-400 font-medium">Story Broadcasts</span>
+              <Send className="w-3.5 h-3.5 text-teal-400" />
+            </div>
+            <p className="text-xl font-bold text-teal-400">{stats.broadcastsSent.toLocaleString()}</p>
+          </div>
+        </div>
+      )}
+
+      {/* Controls & Search Bar */}
+      <div className="p-4 md:p-5 rounded-2xl bg-[#111b21] border border-[#202c33] flex flex-col md:flex-row items-center justify-between gap-4 shadow-xl">
+        <div className="flex flex-wrap items-center gap-3 w-full md:w-auto flex-1">
+          <div className="relative flex-1 min-w-[200px] max-w-sm">
             <Search className="w-3.5 h-3.5 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
             <input
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search logs..."
+              placeholder="Search live logs & events..."
               className="w-full bg-[#0b141a] border border-[#202c33] focus:border-emerald-500 rounded-xl pl-9 pr-3 py-2 text-xs text-white placeholder-slate-600 outline-none"
             />
           </div>
 
-          <div className="flex items-center gap-1.5 bg-[#0b141a] p-1 rounded-xl border border-[#202c33]">
+          {/* Level Filter */}
+          <div className="flex items-center gap-1 bg-[#0b141a] p-1 rounded-xl border border-[#202c33]">
             {['all', 'event', 'success', 'warn', 'error'].map(t => (
               <button
                 key={t}
                 onClick={() => setFilterType(t)}
-                className={`px-2.5 py-1 rounded-lg text-[11px] font-mono font-medium transition-all ${
+                className={`px-2.5 py-1 rounded-lg text-[10px] font-mono font-medium transition-all cursor-pointer ${
                   filterType === t
                     ? 'bg-[#202c33] text-emerald-400 shadow-sm'
                     : 'text-slate-400 hover:text-slate-200'
@@ -93,65 +169,93 @@ export const LiveLogsTab: React.FC<LiveLogsTabProps> = ({ logs, onClear, onRefre
           </div>
         </div>
 
-        <div className="flex items-center gap-2 w-full md:w-auto justify-end">
+        {/* Action Buttons: Export CSV / JSON & Clear */}
+        <div className="flex items-center gap-2 w-full md:w-auto justify-end flex-wrap">
+          <button
+            onClick={exportLogsAsCSV}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-[#0b141a] hover:bg-[#202c33] text-slate-300 hover:text-emerald-400 border border-[#202c33] text-xs font-semibold transition-all cursor-pointer"
+            title="Export CSV audit file"
+          >
+            <FileSpreadsheet className="w-3.5 h-3.5" />
+            <span>CSV</span>
+          </button>
+
+          <button
+            onClick={exportLogsAsJSON}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-[#0b141a] hover:bg-[#202c33] text-slate-300 hover:text-blue-400 border border-[#202c33] text-xs font-semibold transition-all cursor-pointer"
+            title="Export JSON audit file"
+          >
+            <FileCode className="w-3.5 h-3.5" />
+            <span>JSON</span>
+          </button>
+
           <button
             onClick={onRefresh}
-            className="p-2 rounded-xl bg-[#0b141a] hover:bg-[#202c33] text-slate-400 hover:text-emerald-400 border border-[#202c33] transition-all"
+            className="p-2 rounded-xl bg-[#0b141a] hover:bg-[#202c33] text-slate-400 hover:text-emerald-400 border border-[#202c33] transition-all cursor-pointer"
             title="Refresh logs"
           >
-            <RefreshCw className="w-4 h-4" />
+            <RefreshCw className="w-3.5 h-3.5" />
           </button>
-          <button
-            onClick={exportLogs}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-[#0b141a] hover:bg-[#202c33] text-slate-300 text-xs font-semibold border border-[#202c33] transition-all"
-            title="Download log file"
-          >
-            <Download className="w-3.5 h-3.5" />
-            <span>Export</span>
-          </button>
+
           <button
             onClick={onClear}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 text-xs font-semibold border border-rose-500/30 transition-all"
-            title="Clear display logs"
+            className="p-2 rounded-xl bg-[#0b141a] hover:bg-rose-500/10 text-slate-400 hover:text-rose-400 border border-[#202c33] transition-all cursor-pointer"
+            title="Clear current log view"
           >
             <Trash2 className="w-3.5 h-3.5" />
-            <span>Clear</span>
           </button>
         </div>
       </div>
 
-      {/* Terminal Viewport */}
-      <div className="bg-[#0b141a] rounded-2xl border border-[#202c33] shadow-2xl p-5 font-mono text-xs overflow-hidden">
-        <div className="flex items-center justify-between pb-3 mb-3 border-b border-[#202c33] text-slate-500 text-[11px]">
+      {/* Terminal Stream Console */}
+      <div className="rounded-3xl bg-[#0b141a] border border-[#202c33] overflow-hidden shadow-2xl font-mono text-xs">
+        
+        {/* Terminal Header */}
+        <div className="px-4 py-3 bg-[#111b21] border-b border-[#202c33] flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
-            <span className="text-slate-300 font-semibold">Live Event Output Stream</span>
+            <div className="flex gap-1.5">
+              <div className="w-2.5 h-2.5 rounded-full bg-rose-500/80"></div>
+              <div className="w-2.5 h-2.5 rounded-full bg-amber-500/80"></div>
+              <div className="w-2.5 h-2.5 rounded-full bg-emerald-500/80"></div>
+            </div>
+            <span className="text-slate-400 text-[11px] ml-2 font-mono">baileys.engine.events.log</span>
           </div>
-          <span>Showing {filteredLogs.length} events</span>
+
+          <div className="flex items-center gap-2 text-slate-400 text-[11px]">
+            <span className="inline-block w-2 h-2 rounded-full bg-emerald-500 animate-ping"></span>
+            <span>Live Stream Connected</span>
+          </div>
         </div>
 
-        <div className="h-[450px] overflow-y-auto space-y-2 pr-2">
+        {/* Log Entries View */}
+        <div className="p-4 max-h-[500px] overflow-y-auto space-y-2.5 scrollbar-thin scrollbar-thumb-slate-800">
           {filteredLogs.length === 0 ? (
-            <div className="text-center py-20 text-slate-600">
-              No logs match the current search filter.
+            <div className="py-16 text-center text-slate-600">
+              <Terminal className="w-8 h-8 mx-auto mb-2 opacity-40" />
+              <p>No activity logs recorded yet. Events will appear here in real-time.</p>
             </div>
           ) : (
-            filteredLogs.map(log => (
+            filteredLogs.map((log) => (
               <div
                 key={log.id}
-                className="flex items-start gap-3 p-2 rounded-lg hover:bg-[#111b21] transition-colors border border-transparent hover:border-[#202c33]"
+                className="flex items-start gap-3 p-2 rounded-xl hover:bg-[#111b21] transition-colors group"
               >
-                <span className="text-slate-500 text-[10px] shrink-0 mt-0.5">
+                <span className="text-[10px] text-slate-500 shrink-0 pt-0.5 select-none">
                   {new Date(log.timestamp).toLocaleTimeString()}
                 </span>
-                <div className="shrink-0">{getLogBadge(log.type)}</div>
-                <span className="text-slate-200 leading-relaxed break-all">
+                
+                <div className="shrink-0">
+                  {getLogBadge(log.type)}
+                </div>
+
+                <div className="flex-1 text-slate-200 break-words leading-relaxed">
                   {log.message}
-                </span>
+                </div>
               </div>
             ))
           )}
         </div>
+
       </div>
 
     </div>

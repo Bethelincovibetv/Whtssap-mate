@@ -1,16 +1,19 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { 
   Link2, 
+  Users, 
+  Rocket, 
   Send, 
   Eye, 
   Bot, 
   Terminal, 
-  Rocket, 
-  Sparkles, 
+  CloudUpload,
   RefreshCw 
 } from 'lucide-react';
 import { Header } from './components/Header';
 import { ConnectTab } from './components/ConnectTab';
+import { GroupManagerTab } from './components/GroupManagerTab';
+import { CampaignTab } from './components/CampaignTab';
 import { BroadcastTab } from './components/BroadcastTab';
 import { VisibilityTab } from './components/VisibilityTab';
 import { AiResponderTab } from './components/AiResponderTab';
@@ -19,7 +22,7 @@ import { RenderDeployTab } from './components/RenderDeployTab';
 import { EngineStatusResponse, ActivityLog } from './types';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'connect' | 'broadcast' | 'visibility' | 'ai' | 'logs' | 'deploy'>('connect');
+  const [activeTab, setActiveTab] = useState<'connect' | 'groups' | 'campaign' | 'broadcast' | 'visibility' | 'ai' | 'logs' | 'deploy'>('connect');
   const [statusData, setStatusData] = useState<EngineStatusResponse | null>(null);
   const [logs, setLogs] = useState<ActivityLog[]>([]);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
@@ -63,6 +66,7 @@ export default function App() {
           if (payload.type === 'init') {
             setStatusData(prev => ({
               status: payload.status,
+              phase: payload.phase,
               phone: payload.phone,
               name: payload.name,
               hasQr: payload.hasQr,
@@ -70,20 +74,26 @@ export default function App() {
               autoReact: payload.config?.autoReact ?? true,
               autoView: payload.config?.autoView ?? true,
               aiResponder: payload.config?.aiResponder ?? true,
+              aiTriggerMode: payload.config?.aiTriggerMode ?? 'all',
+              triggerKeywords: payload.config?.triggerKeywords ?? [],
               reactionEmojis: payload.config?.reactionEmojis ?? ['🔥', '👏', '❤️'],
               systemPrompt: payload.config?.systemPrompt ?? '',
               viewDelaySeconds: payload.config?.viewDelaySeconds ?? 2,
-              stats: payload.stats
+              typingDelaySeconds: payload.config?.typingDelaySeconds ?? 2,
+              fallbackRules: payload.config?.fallbackRules ?? [],
+              stats: payload.stats,
+              campaign: payload.campaign
             }));
             if (payload.logs) setLogs(payload.logs);
           } else if (payload.type === 'log') {
-            setLogs(prev => [payload.log, ...prev.slice(0, 200)]);
+            setLogs(prev => [payload.log, ...prev.slice(0, 250)]);
             if (payload.stats) {
-              setStatusData(prev => prev ? { ...prev, stats: payload.stats } : prev);
+              setStatusData(prev => prev ? { ...prev, stats: payload.stats, campaign: payload.campaign || prev.campaign } : prev);
             }
           } else if (payload.type === 'state') {
             setStatusData(prev => ({
               status: payload.status,
+              phase: payload.phase,
               phone: payload.phone,
               name: payload.name,
               hasQr: payload.hasQr,
@@ -91,10 +101,15 @@ export default function App() {
               autoReact: payload.config?.autoReact ?? prev?.autoReact ?? true,
               autoView: payload.config?.autoView ?? prev?.autoView ?? true,
               aiResponder: payload.config?.aiResponder ?? prev?.aiResponder ?? true,
+              aiTriggerMode: payload.config?.aiTriggerMode ?? prev?.aiTriggerMode ?? 'all',
+              triggerKeywords: payload.config?.triggerKeywords ?? prev?.triggerKeywords ?? [],
               reactionEmojis: payload.config?.reactionEmojis ?? prev?.reactionEmojis ?? ['🔥'],
               systemPrompt: payload.config?.systemPrompt ?? prev?.systemPrompt ?? '',
               viewDelaySeconds: payload.config?.viewDelaySeconds ?? prev?.viewDelaySeconds ?? 2,
-              stats: payload.stats || prev?.stats
+              typingDelaySeconds: payload.config?.typingDelaySeconds ?? prev?.typingDelaySeconds ?? 2,
+              fallbackRules: payload.config?.fallbackRules ?? prev?.fallbackRules ?? [],
+              stats: payload.stats || prev?.stats,
+              campaign: payload.campaign || prev?.campaign
             }));
           }
         } catch (err) {
@@ -137,19 +152,27 @@ export default function App() {
   };
 
   interface NavItem {
-    id: 'connect' | 'broadcast' | 'visibility' | 'ai' | 'logs' | 'deploy';
+    id: 'connect' | 'groups' | 'campaign' | 'broadcast' | 'visibility' | 'ai' | 'logs' | 'deploy';
     label: string;
     icon: any;
     count?: number;
+    badge?: string;
   }
 
   const navItems: NavItem[] = [
     { id: 'connect', label: 'Connect Account', icon: Link2 },
-    { id: 'broadcast', label: 'Status Broadcast', icon: Send },
-    { id: 'visibility', label: 'Auto-Visibility & Reacts', icon: Eye },
+    { id: 'groups', label: 'Group Manager', icon: Users },
+    { 
+      id: 'campaign', 
+      label: 'Campaign Engine', 
+      icon: Rocket,
+      badge: statusData?.campaign?.status === 'running' ? 'Active' : undefined
+    },
+    { id: 'broadcast', label: 'Story Broadcast', icon: Send },
+    { id: 'visibility', label: 'Story Viewer & Reacts', icon: Eye },
     { id: 'ai', label: 'AI Auto-Responder', icon: Bot },
-    { id: 'logs', label: 'Live Logs', icon: Terminal, count: logs.length },
-    { id: 'deploy', label: 'Render 1-Click Deploy', icon: Rocket },
+    { id: 'logs', label: 'Audit Logs', icon: Terminal, count: logs.length },
+    { id: 'deploy', label: 'Render Deploy', icon: CloudUpload },
   ];
 
   return (
@@ -174,7 +197,7 @@ export default function App() {
               <button
                 key={item.id}
                 onClick={() => setActiveTab(item.id)}
-                className={`flex items-center gap-2 px-4 py-3 text-xs md:text-sm font-semibold rounded-t-xl transition-all border-b-2 shrink-0 cursor-pointer ${
+                className={`flex items-center gap-2 px-3.5 py-3 text-xs md:text-sm font-semibold rounded-t-xl transition-all border-b-2 shrink-0 cursor-pointer ${
                   isActive
                     ? 'border-emerald-500 text-emerald-400 bg-[#111b21]'
                     : 'border-transparent text-slate-400 hover:text-slate-200 hover:bg-[#111b21]/40'
@@ -182,6 +205,13 @@ export default function App() {
               >
                 <Icon className={`w-4 h-4 ${isActive ? 'text-emerald-400' : 'text-slate-400'}`} />
                 <span>{item.label}</span>
+                
+                {item.badge && (
+                  <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 font-bold uppercase animate-pulse">
+                    {item.badge}
+                  </span>
+                )}
+
                 {item.count !== undefined && item.count > 0 && (
                   <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-slate-800 text-slate-300 font-mono">
                     {item.count}
@@ -196,6 +226,21 @@ export default function App() {
         <div>
           {activeTab === 'connect' && (
             <ConnectTab
+              statusData={statusData}
+              onRefresh={fetchStatus}
+            />
+          )}
+
+          {activeTab === 'groups' && (
+            <GroupManagerTab
+              statusData={statusData}
+              onRefresh={fetchStatus}
+              onSelectForCampaign={() => setActiveTab('campaign')}
+            />
+          )}
+
+          {activeTab === 'campaign' && (
+            <CampaignTab
               statusData={statusData}
               onRefresh={fetchStatus}
             />
@@ -225,6 +270,7 @@ export default function App() {
           {activeTab === 'logs' && (
             <LiveLogsTab
               logs={logs}
+              stats={statusData?.stats}
               onClear={handleClearLogs}
               onRefresh={fetchLogs}
             />
@@ -244,7 +290,9 @@ export default function App() {
           <div className="flex items-center gap-4 text-slate-400">
             <span>Baileys MultiAuth</span>
             <span>•</span>
-            <span>Gemini 3.8 Flash</span>
+            <span>Anti-Ban Safeguards</span>
+            <span>•</span>
+            <span>Gemini AI</span>
             <span>•</span>
             <span>Port 3000 Ready</span>
           </div>

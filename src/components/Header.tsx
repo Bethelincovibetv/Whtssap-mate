@@ -7,7 +7,8 @@ import {
   Eye, 
   Sparkles, 
   Bot, 
-  Send
+  Send,
+  Users
 } from 'lucide-react';
 import { EngineStatusResponse, EngineStats } from '../types';
 
@@ -25,6 +26,7 @@ export const Header: React.FC<HeaderProps> = ({ statusData, onLogout, isLoggingO
     reactionsSent: 0,
     aiRepliesSent: 0,
     broadcastsSent: 0,
+    campaignMessagesSent: 0,
     startedAt: new Date().toISOString()
   };
 
@@ -52,14 +54,14 @@ export const Header: React.FC<HeaderProps> = ({ statusData, onLogout, isLoggingO
           <div>
             <div className="flex items-center gap-2">
               <h1 className="text-lg font-bold tracking-tight text-white">
-                WhatsApp Growth Engine
+                WhatsApp Automation & Growth Engine
               </h1>
               <span className="text-[11px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 font-mono font-semibold border border-emerald-500/30">
                 100% Turnkey
               </span>
             </div>
             <p className="text-xs text-slate-400">
-              Autonomous Story Viewer • Smart Auto-Reactor • Gemini AI Auto-Responder
+              Multi-Group Campaigns • Group Manager • Auto-Story Reactor • Gemini AI
             </p>
           </div>
         </div>
@@ -81,16 +83,16 @@ export const Header: React.FC<HeaderProps> = ({ statusData, onLogout, isLoggingO
               <span className="text-slate-500 text-[10px]">reacts</span>
             </div>
             <div className="w-px h-3.5 bg-slate-800" />
+            <div className="flex items-center gap-1.5" title="Group Messages Sent">
+              <Users className="w-3.5 h-3.5 text-emerald-400" />
+              <span className="font-mono text-slate-300 font-semibold">{stats.campaignMessagesSent}</span>
+              <span className="text-slate-500 text-[10px]">groups</span>
+            </div>
+            <div className="w-px h-3.5 bg-slate-800" />
             <div className="flex items-center gap-1.5" title="AI Replies Sent">
               <Bot className="w-3.5 h-3.5 text-purple-400" />
               <span className="font-mono text-slate-300 font-semibold">{stats.aiRepliesSent}</span>
               <span className="text-slate-500 text-[10px]">AI</span>
-            </div>
-            <div className="w-px h-3.5 bg-slate-800" />
-            <div className="flex items-center gap-1.5" title="Stories Broadcasted">
-              <Send className="w-3.5 h-3.5 text-emerald-400" />
-              <span className="font-mono text-slate-300 font-semibold">{stats.broadcastsSent}</span>
-              <span className="text-slate-500 text-[10px]">posts</span>
             </div>
           </div>
 
@@ -106,7 +108,7 @@ export const Header: React.FC<HeaderProps> = ({ statusData, onLogout, isLoggingO
           ) : isConnecting ? (
             <div className="flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-amber-500/10 border border-amber-500/30 text-amber-400 text-xs font-semibold">
               <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping"></span>
-              <span>Waiting for Pair...</span>
+              <span>Pairing Ready...</span>
             </div>
           ) : (
             <div className="flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-rose-500/10 border border-rose-500/30 text-rose-400 text-xs font-semibold">
@@ -120,11 +122,11 @@ export const Header: React.FC<HeaderProps> = ({ statusData, onLogout, isLoggingO
             <button
               onClick={onLogout}
               disabled={isLoggingOut}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 text-rose-300 text-xs font-medium transition-all"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#0b141a] hover:bg-rose-500/10 text-slate-400 hover:text-rose-400 border border-[#202c33] text-xs font-semibold transition-all cursor-pointer disabled:opacity-50"
               title="Disconnect WhatsApp Session"
             >
               <LogOut className="w-3.5 h-3.5" />
-              <span>{isLoggingOut ? 'Clearing...' : 'Disconnect'}</span>
+              <span className="hidden sm:inline">{isLoggingOut ? 'Disconnecting...' : 'Disconnect'}</span>
             </button>
           )}
 
