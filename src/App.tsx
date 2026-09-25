@@ -57,79 +57,98 @@ export default function App() {
     fetchLogs();
 
     let eventSource: EventSource | null = null;
-    try {
-      eventSource = new EventSource('/api/logs/stream');
-      
-      eventSource.onmessage = (event) => {
-        try {
-          const payload = JSON.parse(event.data);
-          if (payload.type === 'init') {
-            setStatusData(prev => ({
-              status: payload.status,
-              phase: payload.phase,
-              phone: payload.phone,
-              name: payload.name,
-              hasQr: payload.hasQr,
-              qr: payload.qr,
-              autoReact: payload.config?.autoReact ?? true,
-              autoView: payload.config?.autoView ?? true,
-              aiResponder: payload.config?.aiResponder ?? true,
-              aiTriggerMode: payload.config?.aiTriggerMode ?? 'all',
-              triggerKeywords: payload.config?.triggerKeywords ?? [],
-              reactionEmojis: payload.config?.reactionEmojis ?? ['🔥', '👏', '❤️'],
-              systemPrompt: payload.config?.systemPrompt ?? '',
-              viewDelaySeconds: payload.config?.viewDelaySeconds ?? 2,
-              typingDelaySeconds: payload.config?.typingDelaySeconds ?? 2,
-              fallbackRules: payload.config?.fallbackRules ?? [],
-              stats: payload.stats,
-              campaign: payload.campaign
-            }));
-            if (payload.logs) setLogs(payload.logs);
-          } else if (payload.type === 'log') {
-            setLogs(prev => [payload.log, ...prev.slice(0, 250)]);
-            if (payload.stats) {
-              setStatusData(prev => prev ? { ...prev, stats: payload.stats, campaign: payload.campaign || prev.campaign } : prev);
-            }
-          } else if (payload.type === 'state') {
-            setStatusData(prev => ({
-              status: payload.status,
-              phase: payload.phase,
-              phone: payload.phone,
-              name: payload.name,
-              hasQr: payload.hasQr,
-              qr: payload.qr,
-              autoReact: payload.config?.autoReact ?? prev?.autoReact ?? true,
-              autoView: payload.config?.autoView ?? prev?.autoView ?? true,
-              aiResponder: payload.config?.aiResponder ?? prev?.aiResponder ?? true,
-              aiTriggerMode: payload.config?.aiTriggerMode ?? prev?.aiTriggerMode ?? 'all',
-              triggerKeywords: payload.config?.triggerKeywords ?? prev?.triggerKeywords ?? [],
-              reactionEmojis: payload.config?.reactionEmojis ?? prev?.reactionEmojis ?? ['🔥'],
-              systemPrompt: payload.config?.systemPrompt ?? prev?.systemPrompt ?? '',
-              viewDelaySeconds: payload.config?.viewDelaySeconds ?? prev?.viewDelaySeconds ?? 2,
-              typingDelaySeconds: payload.config?.typingDelaySeconds ?? prev?.typingDelaySeconds ?? 2,
-              fallbackRules: payload.config?.fallbackRules ?? prev?.fallbackRules ?? [],
-              stats: payload.stats || prev?.stats,
-              campaign: payload.campaign || prev?.campaign
-            }));
-          }
-        } catch (err) {
-          console.error('Failed to parse SSE payload', err);
-        }
-      };
+    let reconnectTimeout: NodeJS.Timeout | null = null;
+    let isSubscribed = true;
 
-      eventSource.onerror = () => {
-        eventSource?.close();
-      };
-    } catch (e) {
-      console.warn('SSE not supported or failed to connect, falling back to polling.');
+    function connectSSE() {
+      if (!isSubscribed) return;
+      try {
+        if (eventSource) {
+          eventSource.close();
+        }
+        eventSource = new EventSource('/api/logs/stream');
+        
+        eventSource.onmessage = (event) => {
+          try {
+            const payload = JSON.parse(event.data);
+            if (payload.type === 'init') {
+              setStatusData(prev => ({
+                status: payload.status,
+                phase: payload.phase,
+                phone: payload.phone,
+                name: payload.name,
+                hasQr: payload.hasQr,
+                qr: payload.qr,
+                autoReact: payload.config?.autoReact ?? true,
+                autoView: payload.config?.autoView ?? true,
+                aiResponder: payload.config?.aiResponder ?? true,
+                aiTriggerMode: payload.config?.aiTriggerMode ?? 'all',
+                triggerKeywords: payload.config?.triggerKeywords ?? [],
+                reactionEmojis: payload.config?.reactionEmojis ?? ['🔥', '👏', '❤️'],
+                systemPrompt: payload.config?.systemPrompt ?? '',
+                viewDelaySeconds: payload.config?.viewDelaySeconds ?? 2,
+                typingDelaySeconds: payload.config?.typingDelaySeconds ?? 2,
+                fallbackRules: payload.config?.fallbackRules ?? [],
+                stats: payload.stats,
+                campaign: payload.campaign
+              }));
+              if (payload.logs) setLogs(payload.logs);
+            } else if (payload.type === 'log') {
+              setLogs(prev => [payload.log, ...prev.slice(0, 250)]);
+              if (payload.stats) {
+                setStatusData(prev => prev ? { ...prev, stats: payload.stats, campaign: payload.campaign || prev.campaign } : prev);
+              }
+            } else if (payload.type === 'state') {
+              setStatusData(prev => ({
+                status: payload.status,
+                phase: payload.phase,
+                phone: payload.phone,
+                name: payload.name,
+                hasQr: payload.hasQr,
+                qr: payload.qr,
+                autoReact: payload.config?.autoReact ?? prev?.autoReact ?? true,
+                autoView: payload.config?.autoView ?? prev?.autoView ?? true,
+                aiResponder: payload.config?.aiResponder ?? prev?.aiResponder ?? true,
+                aiTriggerMode: payload.config?.aiTriggerMode ?? prev?.aiTriggerMode ?? 'all',
+                triggerKeywords: payload.config?.triggerKeywords ?? prev?.triggerKeywords ?? [],
+                reactionEmojis: payload.config?.reactionEmojis ?? prev?.reactionEmojis ?? ['🔥'],
+                systemPrompt: payload.config?.systemPrompt ?? prev?.systemPrompt ?? '',
+                viewDelaySeconds: payload.config?.viewDelaySeconds ?? prev?.viewDelaySeconds ?? 2,
+                typingDelaySeconds: payload.config?.typingDelaySeconds ?? prev?.typingDelaySeconds ?? 2,
+                fallbackRules: payload.config?.fallbackRules ?? prev?.fallbackRules ?? [],
+                stats: payload.stats || prev?.stats,
+                campaign: payload.campaign || prev?.campaign
+              }));
+            }
+          } catch (err) {
+            console.error('Failed to parse SSE payload', err);
+          }
+        };
+
+        eventSource.onerror = () => {
+          if (eventSource) {
+            eventSource.close();
+            eventSource = null;
+          }
+          if (isSubscribed) {
+            reconnectTimeout = setTimeout(connectSSE, 3000);
+          }
+        };
+      } catch (e) {
+        console.warn('SSE not supported or failed to connect, falling back to polling.');
+      }
     }
+
+    connectSSE();
 
     const interval = setInterval(() => {
       fetchStatus();
     }, 4000);
 
     return () => {
+      isSubscribed = false;
       clearInterval(interval);
+      if (reconnectTimeout) clearTimeout(reconnectTimeout);
       eventSource?.close();
     };
   }, [fetchStatus, fetchLogs]);

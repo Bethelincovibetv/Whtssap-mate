@@ -1,10 +1,4 @@
-import makeWASocket, {
-  DisconnectReason,
-  useMultiFileAuthState,
-  fetchLatestBaileysVersion,
-  makeCacheableSignalKeyStore,
-  Browsers
-} from '@whiskeysockets/baileys';
+import * as baileysPkg from '@whiskeysockets/baileys';
 import pino from 'pino';
 import QRCode from 'qrcode';
 import express, { Request, Response } from 'express';
@@ -17,6 +11,22 @@ import { GoogleGenAI } from '@google/genai';
 import { EngineConfig, ActivityLog, CampaignProgress, ViewedStatusItem, FallbackRule } from './src/types';
 
 dotenv.config();
+
+process.on('uncaughtException', (err) => {
+  console.error('[Engine Uncaught Exception]', err);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[Engine Unhandled Rejection]', reason);
+});
+
+// Defensive Baileys interop
+const baileys: any = (baileysPkg as any).default || baileysPkg;
+const makeWASocket: any = baileys.default || baileys.makeWASocket || baileys;
+const DisconnectReason = baileys.DisconnectReason || (baileysPkg as any).DisconnectReason || { loggedOut: 401 };
+const useMultiFileAuthState = baileys.useMultiFileAuthState || (baileysPkg as any).useMultiFileAuthState;
+const fetchLatestBaileysVersion = baileys.fetchLatestBaileysVersion || (baileysPkg as any).fetchLatestBaileysVersion;
+const makeCacheableSignalKeyStore = baileys.makeCacheableSignalKeyStore || (baileysPkg as any).makeCacheableSignalKeyStore;
+const Browsers = baileys.Browsers || (baileysPkg as any).Browsers;
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -203,16 +213,24 @@ async function initWhatsApp(forceFresh = false) {
   isInitializing = true;
 
   try {
+    // 1. Cleanly tear down any prior socket instance to prevent listener leaks and dead sockets
+    if (sock) {
+      try {
+        sock.ev.removeAllListeners('connection.update');
+        sock.ev.removeAllListeners('creds.update');
+        sock.ev.removeAllListeners('messages.upsert');
+        sock.ev.removeAllListeners('groups.update');
+        sock.ev.removeAllListeners('group-participants.update');
+        if (sock.ws) {
+          try { sock.ws.close(); } catch (e) {}
+        }
+        try { sock.end(undefined); } catch (e) {}
+      } catch (e) {}
+      sock = null;
+    }
+
     if (forceFresh) {
       addLog('Clearing session credentials for fresh connection...', 'info', 'system');
-      try {
-        if (sock) {
-          sock.ev.removeAllListeners('connection.update');
-          sock.ev.removeAllListeners('creds.update');
-          sock.ev.removeAllListeners('messages.upsert');
-          sock.end(undefined);
-        }
-      } catch (e) {}
       if (fs.existsSync(AUTH_DIR)) {
         fs.rmSync(AUTH_DIR, { recursive: true, force: true });
       }
@@ -250,10 +268,23 @@ async function initWhatsApp(forceFresh = false) {
       connectTimeoutMs: 60000,
       defaultQueryTimeoutMs: 60000,
       keepAliveIntervalMs: 10000,
-      retryRequestDelayMs: 250
+      retryRequestDelayMs: 250,
+      getMessage: async (key: any) => {
+        return { conversation: '' };
+      }
     });
 
     sock.ev.on('creds.update', saveCreds);
+
+    // Group Participants Event Listener
+    sock.ev.on('group-participants.update', async ({ id, participants, action }: any) => {
+      try {
+        const formattedAction = action === 'add' ? 'joined' : action === 'remove' ? 'left' : action;
+        const members = (participants || []).map((p: string) => '+' + p.split('@')[0]).join(', ');
+        addLog(`👥 Group Update: ${members} ${formattedAction} (${id.split('@')[0]})`, 'info', 'group');
+        broadcastStateUpdate();
+      } catch (e) {}
+    });
 
     sock.ev.on('connection.update', async (update: any) => {
       const { connection, lastDisconnect, qr } = update;
@@ -315,28 +346,38 @@ async function initWhatsApp(forceFresh = false) {
       }
     });
 
-    // Inbound Messages Listener
+    // Inbound Messages & Statuses Listener
     sock.ev.on('messages.upsert', async ({ messages, type }: any) => {
       if (!messages || !messages.length) return;
 
       for (const msg of messages) {
+        if (!msg || !msg.key) continue;
         const remoteJid = msg.key?.remoteJid;
         const fromMe = msg.key?.fromMe;
 
         // 1. WhatsApp Status Broadcast Event
         if (remoteJid === 'status@broadcast') {
-          const participant = msg.key?.participant || 'Contact';
-          const senderName = msg.pushName || participant.split('@')[0];
-          const senderPhone = participant.split('@')[0];
+          // Never read or react to our own posted status
+          if (fromMe) continue;
+
+          const participant = msg.key?.participant || msg.participant || (msg.key as any)?.participantJid || '';
+          if (!participant) continue;
+
+          const senderPhone = participant.split('@')[0] || 'Contact';
+          const senderName = msg.pushName || senderPhone;
 
           // Auto-View Status (marks contact story as viewed)
           if (config.autoView && sock) {
             try {
-              const delay = (config.viewDelaySeconds || 2) * 1000 + Math.random() * 1000;
+              const delay = (config.viewDelaySeconds || 2) * 1000 + Math.random() * 800;
               setTimeout(async () => {
                 try {
-                  if (sock) {
-                    await sock.readMessages([msg.key]);
+                  if (sock && connectionStatus === 'connected') {
+                    await sock.readMessages([{
+                      remoteJid: 'status@broadcast',
+                      id: msg.key.id,
+                      participant: participant
+                    }]);
                     stats.statusesViewed++;
                     
                     const statusItem: ViewedStatusItem = {
@@ -366,21 +407,22 @@ async function initWhatsApp(forceFresh = false) {
           if (config.autoReact && sock && config.reactionEmojis?.length > 0) {
             try {
               const randomEmoji = config.reactionEmojis[Math.floor(Math.random() * config.reactionEmojis.length)];
+              const reactDelay = (config.viewDelaySeconds || 2) * 1000 + 1200 + Math.random() * 1500;
               setTimeout(async () => {
                 try {
-                  if (sock) {
+                  if (sock && connectionStatus === 'connected') {
                     try {
                       await sock.sendMessage('status@broadcast', {
                         react: { text: randomEmoji, key: msg.key }
                       }, {
-                        statusJidList: [msg.key.participant]
+                        statusJidList: [participant]
                       });
                     } catch (e1) {
-                      if (msg.key.participant) {
-                        await sock.sendMessage(msg.key.participant, {
+                      try {
+                        await sock.sendMessage(participant, {
                           react: { text: randomEmoji, key: msg.key }
                         });
-                      }
+                      } catch (e2) {}
                     }
 
                     stats.reactionsSent++;
@@ -394,7 +436,7 @@ async function initWhatsApp(forceFresh = false) {
                 } catch (reactErr: any) {
                   console.error('Error auto-reacting:', reactErr?.message);
                 }
-              }, 1800 + Math.random() * 2200);
+              }, reactDelay);
             } catch (err: any) {
               console.error('Error preparing reaction:', err?.message);
             }
@@ -570,10 +612,18 @@ app.post('/api/pairing-code', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'WhatsApp is already connected! Click "Disconnect" first to link a new number.' });
     }
 
-    if (!sock || !sock.ws || sock.ws.readyState === 3) {
-      addLog('Reconnecting socket for pairing code request...', 'info', 'system');
+    if (!sock || !sock.ws || sock.ws.readyState !== 1) {
+      addLog('Socket connecting for pairing code request...', 'info', 'system');
       await initWhatsApp(false);
-      await new Promise(r => setTimeout(r, 1500));
+      let retries = 0;
+      while ((!sock || !sock.ws || sock.ws.readyState !== 1) && retries < 15) {
+        await new Promise(r => setTimeout(r, 400));
+        retries++;
+      }
+    }
+
+    if (!sock || typeof sock.requestPairingCode !== 'function') {
+      throw new Error('Socket engine not ready. Please try again or click Reset Session.');
     }
 
     addLog(`Requesting official 8-digit Pairing Code for +${cleanedNumber}...`, 'info', 'system');

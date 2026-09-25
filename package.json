@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
-    "build": "vite build",
+    "build": "vite build && cp -r dist/* public/",
     "start": "node server.js",
     "serve:ts": "tsx server.ts",
     "serve": "node server.js",
