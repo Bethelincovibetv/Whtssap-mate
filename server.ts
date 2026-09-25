@@ -9,7 +9,18 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import crypto from 'crypto';
 import { GoogleGenAI } from '@google/genai';
-import { EngineConfig, ActivityLog, CampaignProgress, ViewedStatusItem, FallbackRule, ApiKeyItem, WebhookConfig } from './src/types';
+import { 
+  EngineConfig, 
+  ActivityLog, 
+  CampaignProgress, 
+  ViewedStatusItem, 
+  FallbackRule, 
+  ApiKeyItem, 
+  WebhookConfig,
+  ContactItem,
+  TagDefinition,
+  VcfExportOptions
+} from './src/types';
 
 dotenv.config();
 
@@ -151,6 +162,156 @@ function saveWebhookToFile() {
   } catch (e) {
     console.error('Failed to save webhook.json:', e);
   }
+}
+
+// Contact Tagging & Contact Gain (VCF) Persistence
+const TAGS_FILE = path.join(__dirname, 'tags.json');
+const CONTACTS_FILE = path.join(__dirname, 'contacts.json');
+const GROUP_TAGS_FILE = path.join(__dirname, 'group_tags.json');
+
+let tagDefinitions: TagDefinition[] = [
+  { id: 'vip', name: 'VIP', color: '#eab308', description: 'High priority contacts & key clients', createdAt: new Date().toISOString() },
+  { id: 'lead', name: 'Hot Lead', color: '#ef4444', description: 'Inquiries & potential buyers', createdAt: new Date().toISOString() },
+  { id: 'customer', name: 'Customer', color: '#10b981', description: 'Paying clients & active accounts', createdAt: new Date().toISOString() },
+  { id: 'partner', name: 'Partner', color: '#8b5cf6', description: 'Business associates & affiliates', createdAt: new Date().toISOString() },
+  { id: 'gain', name: 'Contact Gain', color: '#ec4899', description: 'Extracted from group audience expansion', createdAt: new Date().toISOString() },
+  { id: 'member', name: 'Community Member', color: '#3b82f6', description: 'Active WhatsApp community participant', createdAt: new Date().toISOString() }
+];
+
+let contactsMap: Map<string, ContactItem> = new Map();
+let groupTagsMap: Map<string, string[]> = new Map();
+
+if (fs.existsSync(TAGS_FILE)) {
+  try {
+    tagDefinitions = JSON.parse(fs.readFileSync(TAGS_FILE, 'utf-8'));
+  } catch (e) {
+    console.error('Error loading tags.json:', e);
+  }
+} else {
+  try {
+    fs.writeFileSync(TAGS_FILE, JSON.stringify(tagDefinitions, null, 2));
+  } catch (e) {}
+}
+
+if (fs.existsSync(CONTACTS_FILE)) {
+  try {
+    const loadedContacts: ContactItem[] = JSON.parse(fs.readFileSync(CONTACTS_FILE, 'utf-8'));
+    loadedContacts.forEach(c => {
+      if (c && c.jid) contactsMap.set(c.jid, c);
+    });
+  } catch (e) {
+    console.error('Error loading contacts.json:', e);
+  }
+}
+
+if (fs.existsSync(GROUP_TAGS_FILE)) {
+  try {
+    const loadedGroupTags: Record<string, string[]> = JSON.parse(fs.readFileSync(GROUP_TAGS_FILE, 'utf-8'));
+    Object.entries(loadedGroupTags).forEach(([jid, tags]) => {
+      groupTagsMap.set(jid, tags);
+    });
+  } catch (e) {
+    console.error('Error loading group_tags.json:', e);
+  }
+}
+
+function saveTagsToFile() {
+  try {
+    fs.writeFileSync(TAGS_FILE, JSON.stringify(tagDefinitions, null, 2));
+  } catch (e) {
+    console.error('Failed to save tags.json:', e);
+  }
+}
+
+function saveContactsToFile() {
+  try {
+    const list = Array.from(contactsMap.values());
+    fs.writeFileSync(CONTACTS_FILE, JSON.stringify(list, null, 2));
+  } catch (e) {
+    console.error('Failed to save contacts.json:', e);
+  }
+}
+
+function saveGroupTagsToFile() {
+  try {
+    const obj: Record<string, string[]> = {};
+    groupTagsMap.forEach((tags, jid) => { obj[jid] = tags; });
+    fs.writeFileSync(GROUP_TAGS_FILE, JSON.stringify(obj, null, 2));
+  } catch (e) {
+    console.error('Failed to save group_tags.json:', e);
+  }
+}
+
+export function recordContact(
+  jid: string, 
+  pushName?: string, 
+  groupJid?: string, 
+  groupName?: string, 
+  initialTags: string[] = []
+): ContactItem {
+  if (!jid) return {} as ContactItem;
+  const rawPhone = jid.split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
+  const existing = contactsMap.get(jid);
+  const now = new Date().toISOString();
+
+  if (existing) {
+    if (pushName && (!existing.name || existing.name.startsWith('+') || existing.name.includes('Member'))) {
+      existing.name = pushName;
+    }
+    if (pushName) existing.pushName = pushName;
+    if (groupJid && !existing.groupJids?.includes(groupJid)) {
+      existing.groupJids = [...(existing.groupJids || []), groupJid];
+    }
+    if (groupName && !existing.groupNames?.includes(groupName)) {
+      existing.groupNames = [...(existing.groupNames || []), groupName];
+    }
+    if (initialTags.length > 0) {
+      existing.tags = Array.from(new Set([...(existing.tags || []), ...initialTags]));
+    }
+    existing.lastUpdated = now;
+    return existing;
+  }
+
+  const newContact: ContactItem = {
+    jid,
+    phone: rawPhone,
+    name: pushName || `+${rawPhone}`,
+    pushName: pushName || undefined,
+    tags: initialTags.length > 0 ? initialTags : ['member'],
+    notes: '',
+    groupJids: groupJid ? [groupJid] : [],
+    groupNames: groupName ? [groupName] : [],
+    lastUpdated: now
+  };
+
+  contactsMap.set(jid, newContact);
+  return newContact;
+}
+
+export function buildVcfContent(contacts: { phone: string; name: string; org?: string; note?: string }[]): string {
+  let vcf = '';
+  for (const c of contacts) {
+    const cleanPhone = c.phone.replace(/[^0-9+]/g, '');
+    if (!cleanPhone) continue;
+    const formattedPhone = cleanPhone.startsWith('+') ? cleanPhone : `+${cleanPhone}`;
+    const cleanName = (c.name || `Contact ${formattedPhone}`).replace(/[\r\n;,]/g, ' ').trim();
+    
+    vcf += 'BEGIN:VCARD\r\n';
+    vcf += 'VERSION:3.0\r\n';
+    vcf += `FN:${cleanName}\r\n`;
+    vcf += `N:;${cleanName};;;\r\n`;
+    vcf += `TEL;TYPE=CELL,VOICE:${formattedPhone}\r\n`;
+    if (c.org) {
+      vcf += `ORG:${c.org.replace(/[\r\n;,]/g, ' ').trim()}\r\n`;
+    }
+    if (c.note) {
+      vcf += `NOTE:${c.note.replace(/[\r\n;,]/g, ' ').trim()}\r\n`;
+    } else {
+      vcf += `NOTE:Generated by WhatsApp Growth & Automation Engine\r\n`;
+    }
+    vcf += 'END:VCARD\r\n';
+  }
+  return vcf;
 }
 
 let keepAliveTimer: NodeJS.Timeout | null = null;
@@ -1129,7 +1290,7 @@ app.get('/api/status/viewed-log', (req: Request, res: Response) => {
   });
 });
 
-// 8. GROUP MANAGEMENT APIS
+// 8. GROUP MANAGEMENT & CONTACT TAGGING APIS
 
 // Fetch all joined groups
 app.get('/api/groups', async (req: Request, res: Response) => {
@@ -1143,6 +1304,16 @@ app.get('/api/groups', async (req: Request, res: Response) => {
 
     const groupList = Object.values(groupsData).map((g: any) => {
       const isBotAdmin = !!g.participants?.find((p: any) => (p.id === botJid || (activePhone && p.id?.includes(activePhone))) && (p.admin === 'admin' || p.admin === 'superadmin'));
+      
+      // Auto-index participants into contactsMap
+      if (Array.isArray(g.participants)) {
+        g.participants.forEach((p: any) => {
+          recordContact(p.id, undefined, g.id, g.subject || 'Unnamed Group');
+        });
+      }
+
+      const tags = groupTagsMap.get(g.id) || [];
+
       return {
         id: g.id,
         subject: g.subject || 'Unnamed Group',
@@ -1155,9 +1326,12 @@ app.get('/api/groups', async (req: Request, res: Response) => {
         isBotAdmin,
         announce: !!g.announce,
         restrict: !!g.restrict,
-        participantsCount: g.participants?.length || 0
+        participantsCount: g.participants?.length || 0,
+        tags
       };
     });
+
+    saveContactsToFile();
 
     res.json({
       success: true,
@@ -1169,7 +1343,7 @@ app.get('/api/groups', async (req: Request, res: Response) => {
   }
 });
 
-// Fetch detailed group metadata (including participants)
+// Fetch detailed group metadata (including participants with tag details)
 app.get('/api/groups/:jid', async (req: Request, res: Response) => {
   try {
     if (connectionStatus !== 'connected' || !sock) {
@@ -1181,6 +1355,23 @@ app.get('/api/groups/:jid', async (req: Request, res: Response) => {
     const botJid = sock.user?.id?.split(':')[0] + '@s.whatsapp.net';
     const isBotAdmin = !!metadata.participants?.find((p: any) => (p.id === botJid || (activePhone && p.id?.includes(activePhone))) && (p.admin === 'admin' || p.admin === 'superadmin'));
 
+    const groupTags = groupTagsMap.get(jid) || [];
+
+    // Map participants with contact tag data
+    const enrichedParticipants = (metadata.participants || []).map((p: any) => {
+      const contact = recordContact(p.id, undefined, metadata.id, metadata.subject);
+      return {
+        id: p.id,
+        admin: p.admin,
+        phone: contact.phone,
+        name: contact.name,
+        tags: contact.tags || ['member'],
+        notes: contact.notes || ''
+      };
+    });
+
+    saveContactsToFile();
+
     res.json({
       success: true,
       group: {
@@ -1188,15 +1379,445 @@ app.get('/api/groups/:jid', async (req: Request, res: Response) => {
         subject: metadata.subject,
         owner: metadata.owner,
         desc: metadata.desc ? String(metadata.desc) : '',
-        participants: metadata.participants,
+        participants: enrichedParticipants,
         size: metadata.participants?.length || 0,
         isBotAdmin,
         announce: !!metadata.announce,
-        restrict: !!metadata.restrict
+        restrict: !!metadata.restrict,
+        tags: groupTags
       }
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// Tag Definitions CRUD
+app.get('/api/tags', (req: Request, res: Response) => {
+  res.json({
+    success: true,
+    tags: tagDefinitions
+  });
+});
+
+app.post('/api/tags', (req: Request, res: Response) => {
+  try {
+    const { action, tag, id } = req.body;
+    
+    if (action === 'create' && tag) {
+      const newTag: TagDefinition = {
+        id: (tag.name || 'tag').toLowerCase().replace(/[^a-z0-9]/g, '_') + '_' + Date.now().toString(36).substring(4),
+        name: tag.name?.trim() || 'New Tag',
+        color: tag.color || '#3b82f6',
+        description: tag.description || '',
+        createdAt: new Date().toISOString()
+      };
+      tagDefinitions.push(newTag);
+      saveTagsToFile();
+      addLog(`🏷️ Created custom contact tag: "${newTag.name}"`, 'info', 'group');
+      return res.json({ success: true, tags: tagDefinitions, tag: newTag });
+    }
+
+    if (action === 'update' && tag && id) {
+      const index = tagDefinitions.findIndex(t => t.id === id);
+      if (index !== -1) {
+        tagDefinitions[index] = { ...tagDefinitions[index], ...tag, id };
+        saveTagsToFile();
+        addLog(`🏷️ Updated tag: "${tagDefinitions[index].name}"`, 'info', 'group');
+        return res.json({ success: true, tags: tagDefinitions });
+      }
+      return res.status(404).json({ error: 'Tag not found' });
+    }
+
+    if (action === 'delete' && id) {
+      tagDefinitions = tagDefinitions.filter(t => t.id !== id);
+      saveTagsToFile();
+      
+      // Remove deleted tag from contacts
+      contactsMap.forEach(c => {
+        if (c.tags.includes(id)) {
+          c.tags = c.tags.filter(t => t !== id);
+        }
+      });
+      saveContactsToFile();
+
+      addLog(`🏷️ Deleted contact tag: "${id}"`, 'info', 'group');
+      return res.json({ success: true, tags: tagDefinitions });
+    }
+
+    res.status(400).json({ error: 'Invalid tag action' });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Contacts Query API
+app.get('/api/contacts', (req: Request, res: Response) => {
+  try {
+    const { tag, search, groupJid } = req.query;
+    let list = Array.from(contactsMap.values());
+
+    if (groupJid) {
+      list = list.filter(c => c.groupJids?.includes(String(groupJid)));
+    }
+
+    if (tag && tag !== 'all') {
+      const tagStr = String(tag);
+      list = list.filter(c => c.tags?.includes(tagStr));
+    }
+
+    if (search) {
+      const q = String(search).toLowerCase();
+      list = list.filter(c => 
+        (c.name && c.name.toLowerCase().includes(q)) ||
+        (c.phone && c.phone.includes(q)) ||
+        (c.notes && c.notes.toLowerCase().includes(q)) ||
+        (c.groupNames && c.groupNames.some(gn => gn.toLowerCase().includes(q)))
+      );
+    }
+
+    res.json({
+      success: true,
+      total: list.length,
+      contacts: list
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Bulk / Single Contact Tagging
+app.post('/api/contacts/tag', (req: Request, res: Response) => {
+  try {
+    const { jids, addTags = [], removeTags = [], replaceTags } = req.body;
+    if (!Array.isArray(jids) || jids.length === 0) {
+      return res.status(400).json({ error: 'Please provide array of contact JIDs.' });
+    }
+
+    let updatedCount = 0;
+    jids.forEach(jid => {
+      const contact = recordContact(jid);
+      if (replaceTags && Array.isArray(replaceTags)) {
+        contact.tags = [...replaceTags];
+      } else {
+        if (addTags.length > 0) {
+          contact.tags = Array.from(new Set([...contact.tags, ...addTags]));
+        }
+        if (removeTags.length > 0) {
+          contact.tags = contact.tags.filter(t => !removeTags.includes(t));
+        }
+      }
+      contact.lastUpdated = new Date().toISOString();
+      contactsMap.set(jid, contact);
+      updatedCount++;
+    });
+
+    saveContactsToFile();
+    addLog(`🏷️ Updated tags on ${updatedCount} contacts.`, 'success', 'group');
+
+    res.json({
+      success: true,
+      updatedCount,
+      contacts: jids.map(jid => contactsMap.get(jid))
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Group Tagging (Tag group itself + optionally tag all group participants)
+app.post('/api/contacts/group-tag', async (req: Request, res: Response) => {
+  try {
+    const { jid, groupSubject, tags = [], tagParticipants = true } = req.body;
+    if (!jid) return res.status(400).json({ error: 'Provide group jid.' });
+
+    groupTagsMap.set(jid, tags);
+    saveGroupTagsToFile();
+
+    let participantsTaggedCount = 0;
+    if (tagParticipants && sock) {
+      try {
+        const metadata = await sock.groupMetadata(jid);
+        if (metadata && metadata.participants) {
+          metadata.participants.forEach((p: any) => {
+            const contact = recordContact(p.id, undefined, jid, groupSubject || metadata.subject, tags);
+            participantsTaggedCount++;
+          });
+          saveContactsToFile();
+        }
+      } catch (e) {}
+    }
+
+    addLog(`🏷️ Tagged group "${groupSubject || jid.split('@')[0]}" with [${tags.join(', ')}] (${participantsTaggedCount} participants tagged)`, 'success', 'group');
+
+    res.json({
+      success: true,
+      jid,
+      tags,
+      participantsTaggedCount
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Edit Contact Info (Name, Notes, Tags)
+app.post('/api/contacts/edit', (req: Request, res: Response) => {
+  try {
+    const { jid, name, notes, tags } = req.body;
+    if (!jid) return res.status(400).json({ error: 'Provide contact jid.' });
+
+    const contact = recordContact(jid);
+    if (name !== undefined) contact.name = name;
+    if (notes !== undefined) contact.notes = notes;
+    if (tags !== undefined && Array.isArray(tags)) contact.tags = tags;
+    contact.lastUpdated = new Date().toISOString();
+
+    contactsMap.set(jid, contact);
+    saveContactsToFile();
+
+    res.json({ success: true, contact });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 8B. CONTACT GAIN & VCF GENERATION APIS
+
+// Generate VCF Data for a Group or Tagged Contacts
+app.post('/api/contacts/vcf/generate', async (req: Request, res: Response) => {
+  try {
+    const { 
+      jid, 
+      groupJids = [], 
+      contactJids = [], 
+      tagIds = [], 
+      prefix, 
+      excludeBot = true,
+      includeAdminsOnly = false 
+    } = req.body;
+
+    let targetContacts: { phone: string; name: string; org?: string; note?: string }[] = [];
+    let groupSubject = 'WhatsApp Contacts';
+
+    const botPhone = activePhone || sock?.user?.id?.split(':')[0]?.split('@')[0];
+
+    // Case 1: Single Group VCF Generation
+    if (jid) {
+      if (sock && connectionStatus === 'connected') {
+        const metadata = await sock.groupMetadata(jid);
+        groupSubject = metadata.subject || 'WhatsApp Group';
+        const cleanGroupName = groupSubject.replace(/[^\w\s-]/g, '').trim();
+
+        (metadata.participants || []).forEach((p: any, idx: number) => {
+          const rawPhone = p.id.split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
+          if (excludeBot && botPhone && rawPhone.includes(botPhone)) return;
+          if (includeAdminsOnly && p.admin !== 'admin' && p.admin !== 'superadmin') return;
+
+          const contact = contactsMap.get(p.id);
+          const contactPrefix = prefix !== undefined ? prefix : `[${cleanGroupName.slice(0, 15)}] `;
+          const contactName = contact?.name && !contact.name.startsWith('+') 
+            ? `${contactPrefix}${contact.name}` 
+            : `${contactPrefix}Gain ${idx + 1} (+${rawPhone})`;
+
+          targetContacts.push({
+            phone: rawPhone,
+            name: contactName,
+            org: groupSubject,
+            note: `Extracted from group: ${groupSubject} (${metadata.id})`
+          });
+        });
+      } else {
+        // Fallback to indexed contacts
+        const groupMembers = Array.from(contactsMap.values()).filter(c => c.groupJids?.includes(jid));
+        groupMembers.forEach((c, idx) => {
+          const contactPrefix = prefix !== undefined ? prefix : '[Gain] ';
+          targetContacts.push({
+            phone: c.phone,
+            name: `${contactPrefix}${c.name || 'Member ' + (idx + 1)}`,
+            org: groupSubject
+          });
+        });
+      }
+    } 
+    // Case 2: Tag-Based Contacts VCF Generation
+    else if (tagIds.length > 0) {
+      const tagged = Array.from(contactsMap.values()).filter(c => 
+        c.tags?.some(t => tagIds.includes(t))
+      );
+      tagged.forEach((c, idx) => {
+        const contactPrefix = prefix !== undefined ? prefix : '[Tagged] ';
+        targetContacts.push({
+          phone: c.phone,
+          name: `${contactPrefix}${c.name || 'Contact ' + (idx + 1)}`,
+          org: c.tags.join(', ')
+        });
+      });
+      groupSubject = `Tagged Contacts (${tagIds.join('_')})`;
+    }
+    // Case 3: Explicit Contact JIDs
+    else if (contactJids.length > 0) {
+      contactJids.forEach((cJid: string, idx: number) => {
+        const c = contactsMap.get(cJid) || recordContact(cJid);
+        const contactPrefix = prefix !== undefined ? prefix : '[Gain] ';
+        targetContacts.push({
+          phone: c.phone,
+          name: `${contactPrefix}${c.name || 'Contact ' + (idx + 1)}`
+        });
+      });
+      groupSubject = 'Selected Contacts';
+    }
+
+    const vcfContent = buildVcfContent(targetContacts);
+    const safeFileName = `${groupSubject.toLowerCase().replace(/[^a-z0-9]/g, '_')}_contacts_${Date.now().toString(36)}.vcf`;
+
+    res.json({
+      success: true,
+      fileName: safeFileName,
+      count: targetContacts.length,
+      sampleContacts: targetContacts.slice(0, 5).map(c => `${c.name} (+${c.phone})`),
+      vcfContent
+    });
+  } catch (err: any) {
+    console.error('VCF generation error:', err);
+    res.status(500).json({ error: err.message || 'Failed to generate VCF file.' });
+  }
+});
+
+// Send VCF File Directly Into WhatsApp Group for all members to download & save
+app.post('/api/contacts/vcf/send-group', async (req: Request, res: Response) => {
+  try {
+    const { 
+      jid, 
+      groupSubject, 
+      prefix, 
+      customCaption, 
+      excludeBot = true, 
+      includeAdminsOnly = false 
+    } = req.body;
+
+    if (!jid) return res.status(400).json({ error: 'Provide group jid.' });
+    if (connectionStatus !== 'connected' || !sock) {
+      return res.status(400).json({ error: 'WhatsApp is not connected.' });
+    }
+
+    addLog(`📁 Generating Contact Gain VCF for group ${jid.split('@')[0]}...`, 'info', 'group');
+
+    const metadata = await sock.groupMetadata(jid);
+    const subject = groupSubject || metadata.subject || 'Group Contacts';
+    const cleanGroupName = subject.replace(/[^\w\s-]/g, '').trim();
+    const botPhone = activePhone || sock.user?.id?.split(':')[0]?.split('@')[0];
+
+    const targetContacts: { phone: string; name: string; org?: string; note?: string }[] = [];
+
+    (metadata.participants || []).forEach((p: any, idx: number) => {
+      const rawPhone = p.id.split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
+      if (excludeBot && botPhone && rawPhone.includes(botPhone)) return;
+      if (includeAdminsOnly && p.admin !== 'admin' && p.admin !== 'superadmin') return;
+
+      const contact = contactsMap.get(p.id);
+      const contactPrefix = prefix !== undefined ? prefix : `[${cleanGroupName.slice(0, 15)}] `;
+      const contactName = contact?.name && !contact.name.startsWith('+') 
+        ? `${contactPrefix}${contact.name}` 
+        : `${contactPrefix}Gain ${idx + 1} (+${rawPhone})`;
+
+      targetContacts.push({
+        phone: rawPhone,
+        name: contactName,
+        org: subject,
+        note: `Exported from group: ${subject}`
+      });
+    });
+
+    if (targetContacts.length === 0) {
+      return res.status(400).json({ error: 'No valid participants found to include in VCF file.' });
+    }
+
+    const vcfString = buildVcfContent(targetContacts);
+    const vcfBuffer = Buffer.from(vcfString, 'utf-8');
+    const safeFileName = `${cleanGroupName.toLowerCase().replace(/[^a-z0-9]/g, '_')}_contacts.vcf`;
+
+    const defaultCaption = `📁 *CONTACT GAIN VCF FILE — ${subject}*\n\n` +
+      `👥 *Total Contacts:* ${targetContacts.length} verified numbers\n` +
+      `⚡ *How to use:* Tap this .vcf file to import all members directly into your phone contacts in 1-click!\n\n` +
+      `🚀 *Save all numbers to view each other's status & scale your WhatsApp reach!*`;
+
+    const captionToSend = customCaption?.trim() || defaultCaption;
+
+    // Send Document via Baileys
+    await sock.sendMessage(jid, {
+      document: vcfBuffer,
+      mimetype: 'text/vcard',
+      fileName: safeFileName,
+      caption: captionToSend
+    });
+
+    stats.broadcastsSent++;
+    addLog(`📁✓ Contact Gain VCF (${targetContacts.length} contacts) sent successfully to group "${subject}"!`, 'success', 'group');
+    broadcastStateUpdate();
+
+    res.json({
+      success: true,
+      fileName: safeFileName,
+      count: targetContacts.length,
+      sentToGroup: true,
+      message: `VCF file containing ${targetContacts.length} contacts sent directly to "${subject}"!`
+    });
+  } catch (err: any) {
+    console.error('Send group VCF error:', err);
+    addLog(`Failed to send VCF into group: ${err.message}`, 'error', 'group');
+    res.status(500).json({ error: err.message || 'Failed to send VCF to WhatsApp group.' });
+  }
+});
+
+// Direct Download VCF File
+app.get('/api/contacts/vcf/download', async (req: Request, res: Response) => {
+  try {
+    const { jid, tag, prefix } = req.query;
+    let targetContacts: { phone: string; name: string; org?: string }[] = [];
+    let title = 'contacts';
+
+    if (jid && sock && connectionStatus === 'connected') {
+      const metadata = await sock.groupMetadata(String(jid));
+      title = (metadata.subject || 'group').replace(/[^\w\s-]/g, '').trim();
+      (metadata.participants || []).forEach((p: any, idx: number) => {
+        const rawPhone = p.id.split('@')[0].replace(/[^0-9]/g, '');
+        const contact = contactsMap.get(p.id);
+        const contactPrefix = prefix ? String(prefix) : `[${title.slice(0, 15)}] `;
+        targetContacts.push({
+          phone: rawPhone,
+          name: contact?.name && !contact.name.startsWith('+') ? `${contactPrefix}${contact.name}` : `${contactPrefix}Gain ${idx + 1}`,
+          org: metadata.subject
+        });
+      });
+    } else if (tag) {
+      title = `tag_${tag}`;
+      const tagged = Array.from(contactsMap.values()).filter(c => c.tags?.includes(String(tag)));
+      tagged.forEach((c, idx) => {
+        targetContacts.push({
+          phone: c.phone,
+          name: c.name || `Contact ${idx + 1}`,
+          org: String(tag)
+        });
+      });
+    } else {
+      const all = Array.from(contactsMap.values());
+      all.forEach((c, idx) => {
+        targetContacts.push({
+          phone: c.phone,
+          name: c.name || `Contact ${idx + 1}`
+        });
+      });
+    }
+
+    const vcfString = buildVcfContent(targetContacts);
+    const safeName = `${title.toLowerCase().replace(/[^a-z0-9]/g, '_')}_contacts.vcf`;
+
+    res.setHeader('Content-Type', 'text/vcard; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${safeName}"`);
+    res.send(vcfString);
+  } catch (err: any) {
+    res.status(500).send('Error generating VCF download: ' + err.message);
   }
 });
 
@@ -1260,7 +1881,7 @@ app.post('/api/groups/invite-code', async (req: Request, res: Response) => {
   }
 });
 
-// 9. AUTOMATED MULTI-GROUP CAMPAIGN ENGINE (ANTI-BAN SAFEGUARDS)
+// 9. AUTOMATED MULTI-GROUP & TAGGED CONTACT BROADCAST CAMPAIGN ENGINE (ANTI-BAN SAFEGUARDS)
 
 // Spintax Preview API
 app.post('/api/campaigns/spintax-preview', (req: Request, res: Response) => {
@@ -1274,11 +1895,14 @@ app.post('/api/campaigns/spintax-preview', (req: Request, res: Response) => {
   res.json({ samples });
 });
 
-// Start Campaign
+// Start Campaign (Supports Groups or Tagged Contacts Direct Broadcast)
 app.post('/api/campaigns/start', async (req: Request, res: Response) => {
   try {
     const {
-      targetGroupJids,
+      targetMode = 'groups',
+      targetGroupJids = [],
+      targetContactJids = [],
+      targetTags = [],
       templateText,
       imageUrl,
       minDelaySec = 15,
@@ -1291,8 +1915,23 @@ app.post('/api/campaigns/start', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'WhatsApp is not connected. Connect account first.' });
     }
 
-    if (!Array.isArray(targetGroupJids) || targetGroupJids.length === 0) {
-      return res.status(400).json({ error: 'Please select at least 1 target group.' });
+    // Resolve target JIDs based on targetMode
+    let resolvedTargetJids: string[] = [];
+    if (targetMode === 'tagged_contacts' || targetMode === 'direct_contacts') {
+      if (targetTags.length > 0) {
+        const taggedContacts = Array.from(contactsMap.values()).filter(c => 
+          c.tags?.some(t => targetTags.includes(t))
+        );
+        resolvedTargetJids = taggedContacts.map(c => c.jid);
+      } else if (Array.isArray(targetContactJids) && targetContactJids.length > 0) {
+        resolvedTargetJids = targetContactJids;
+      }
+    } else {
+      resolvedTargetJids = Array.isArray(targetGroupJids) ? targetGroupJids : [];
+    }
+
+    if (resolvedTargetJids.length === 0) {
+      return res.status(400).json({ error: 'Please select at least 1 target group or tagged contact.' });
     }
 
     if (!templateText && !imageUrl) {
@@ -1309,12 +1948,15 @@ app.post('/api/campaigns/start', async (req: Request, res: Response) => {
     currentCampaign = {
       id: 'cmp_' + Date.now(),
       status: 'running',
-      targetGroupJids,
-      totalGroups: targetGroupJids.length,
+      targetMode,
+      targetGroupJids: targetMode === 'groups' ? resolvedTargetJids : [],
+      targetContactJids: targetMode !== 'groups' ? resolvedTargetJids : [],
+      targetTags,
+      totalGroups: resolvedTargetJids.length,
       sentCount: 0,
       failedCount: 0,
       currentIndex: 0,
-      currentGroupJid: targetGroupJids[0],
+      currentGroupJid: resolvedTargetJids[0],
       currentGroupName: null,
       minDelaySec: Math.max(5, Number(minDelaySec) || 15),
       maxDelaySec: Math.max(Number(minDelaySec) || 15, Number(maxDelaySec) || 35),
@@ -1329,7 +1971,11 @@ app.post('/api/campaigns/start', async (req: Request, res: Response) => {
       logs: []
     };
 
-    addLog(`🚀 Started Multi-Group Campaign across ${targetGroupJids.length} groups with Anti-Ban safeguards.`, 'info', 'campaign');
+    const targetDesc = targetMode === 'tagged_contacts' 
+      ? `Tagged Contacts [${targetTags.join(', ')}] (${resolvedTargetJids.length} recipients)`
+      : `${resolvedTargetJids.length} Groups`;
+
+    addLog(`🚀 Started Broadcast Campaign across ${targetDesc} with Anti-Ban safeguards.`, 'info', 'campaign');
     broadcastStateUpdate();
 
     runCampaignStep();
@@ -1343,19 +1989,38 @@ app.post('/api/campaigns/start', async (req: Request, res: Response) => {
 async function runCampaignStep() {
   if (currentCampaign.status !== 'running') return;
 
-  if (currentCampaign.currentIndex >= currentCampaign.totalGroups) {
+  const targetList = currentCampaign.targetMode === 'tagged_contacts' || currentCampaign.targetMode === 'direct_contacts'
+    ? (currentCampaign.targetContactJids || [])
+    : currentCampaign.targetGroupJids;
+
+  if (currentCampaign.currentIndex >= targetList.length) {
     currentCampaign.status = 'completed';
     currentCampaign.completedAt = new Date().toISOString();
-    addLog(`🎉 Multi-Group Campaign completed! Sent to ${currentCampaign.sentCount} groups (${currentCampaign.failedCount} failed).`, 'success', 'campaign');
+    addLog(`🎉 Campaign completed! Sent to ${currentCampaign.sentCount} recipients (${currentCampaign.failedCount} failed).`, 'success', 'campaign');
     broadcastStateUpdate();
     return;
   }
 
-  const jid = currentCampaign.targetGroupJids[currentCampaign.currentIndex];
+  const jid = targetList[currentCampaign.currentIndex];
   currentCampaign.currentGroupJid = jid;
 
   try {
-    const messageContent = parseSpintax(currentCampaign.templateText);
+    // Dynamic Personalization Variables Replacement for Tagged Contacts
+    let rawText = currentCampaign.templateText || '';
+    if (currentCampaign.targetMode === 'tagged_contacts' || currentCampaign.targetMode === 'direct_contacts') {
+      const contact = contactsMap.get(jid) || recordContact(jid);
+      const cleanName = contact.name && !contact.name.startsWith('+') ? contact.name : 'Friend';
+      const firstName = cleanName.split(' ')[0];
+      const primaryTag = contact.tags?.[0] || 'Member';
+
+      rawText = rawText
+        .replace(/\{name\}/gi, cleanName)
+        .replace(/\{first_name\}/gi, firstName)
+        .replace(/\{phone\}/gi, `+${contact.phone}`)
+        .replace(/\{tag\}/gi, primaryTag);
+    }
+
+    const messageContent = parseSpintax(rawText);
     
     if (currentCampaign.imageUrl) {
       await sock.sendMessage(jid, {
@@ -1370,13 +2035,14 @@ async function runCampaignStep() {
 
     currentCampaign.sentCount++;
     stats.campaignMessagesSent++;
-    const progressMsg = `Sent to group ${currentCampaign.currentIndex + 1}/${currentCampaign.totalGroups} (${jid.split('@')[0]})`;
+    const recipientLabel = currentCampaign.targetMode === 'tagged_contacts' || currentCampaign.targetMode === 'direct_contacts' ? 'Contact' : 'Group';
+    const progressMsg = `Sent to ${recipientLabel} ${currentCampaign.currentIndex + 1}/${targetList.length} (+${jid.split('@')[0]})`;
     currentCampaign.logs.unshift(`[${new Date().toLocaleTimeString()}] ✓ ${progressMsg}`);
     addLog(`📢 Campaign: ${progressMsg}`, 'success', 'campaign');
 
   } catch (sendErr: any) {
     currentCampaign.failedCount++;
-    const failMsg = `Failed sending to group ${jid}: ${sendErr.message}`;
+    const failMsg = `Failed sending to ${jid}: ${sendErr.message}`;
     currentCampaign.logs.unshift(`[${new Date().toLocaleTimeString()}] ❌ ${failMsg}`);
     addLog(failMsg, 'warn', 'campaign');
   }
@@ -1384,10 +2050,10 @@ async function runCampaignStep() {
   currentCampaign.currentIndex++;
   broadcastStateUpdate();
 
-  if (currentCampaign.currentIndex >= currentCampaign.totalGroups) {
+  if (currentCampaign.currentIndex >= targetList.length) {
     currentCampaign.status = 'completed';
     currentCampaign.completedAt = new Date().toISOString();
-    addLog(`🎉 Multi-Group Campaign completed successfully!`, 'success', 'campaign');
+    addLog(`🎉 Campaign broadcast queue completed successfully!`, 'success', 'campaign');
     broadcastStateUpdate();
     return;
   }
@@ -1398,7 +2064,7 @@ async function runCampaignStep() {
     currentCampaign.status = 'batch_pausing';
     currentCampaign.batchPauseRemainingSec = pauseSeconds;
     
-    addLog(`⏳ Anti-Ban Batch Pause: Completed batch of ${currentCampaign.batchSize} groups. Resting for ${currentCampaign.batchPauseMinutes} minutes...`, 'info', 'campaign');
+    addLog(`⏳ Anti-Ban Batch Pause: Completed batch of ${currentCampaign.batchSize} messages. Resting for ${currentCampaign.batchPauseMinutes} minutes...`, 'info', 'campaign');
     broadcastStateUpdate();
 
     campaignCountdownTimer = setInterval(() => {
@@ -1419,13 +2085,13 @@ async function runCampaignStep() {
     return;
   }
 
-  // Randomized Pacing Jitter Delay between groups
+  // Randomized Pacing Jitter Delay
   const delaySec = Math.floor(
     Math.random() * (currentCampaign.maxDelaySec - currentCampaign.minDelaySec + 1)
   ) + currentCampaign.minDelaySec;
 
   currentCampaign.nextSendInSec = delaySec;
-  addLog(`⏳ Waiting ${delaySec}s before sending next group (Anti-Ban Jitter)...`, 'info', 'campaign');
+  addLog(`⏳ Waiting ${delaySec}s before sending next message (Anti-Ban Jitter)...`, 'info', 'campaign');
   broadcastStateUpdate();
 
   campaignCountdownTimer = setInterval(() => {

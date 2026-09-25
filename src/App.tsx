@@ -20,6 +20,11 @@ export default function App() {
   const [logs, setLogs] = useState<ActivityLog[]>([]);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [campaignPreload, setCampaignPreload] = useState<{
+    mode?: 'groups' | 'tagged_contacts';
+    targetGroupJids?: string[];
+    targetTags?: string[];
+  } | null>(null);
 
   const {
     isInstallable,
@@ -235,7 +240,10 @@ export default function App() {
             <GroupManagerTab
               statusData={statusData}
               onRefresh={fetchStatus}
-              onSelectForCampaign={() => setActiveTab('campaign')}
+              onSelectForCampaign={(options) => {
+                if (options) setCampaignPreload(options);
+                setActiveTab('campaign');
+              }}
             />
           )}
 
@@ -243,6 +251,7 @@ export default function App() {
             <CampaignTab
               statusData={statusData}
               onRefresh={fetchStatus}
+              preloadOptions={campaignPreload}
             />
           )}
 

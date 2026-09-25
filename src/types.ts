@@ -64,12 +64,49 @@ export interface GroupItem {
   announce?: boolean;
   restrict?: boolean;
   participantsCount?: number;
+  tags?: string[];
+}
+
+export interface TagDefinition {
+  id: string;
+  name: string;
+  color: string;
+  description?: string;
+  createdAt: string;
+}
+
+export interface ContactItem {
+  jid: string;
+  phone: string;
+  name?: string;
+  pushName?: string;
+  tags: string[];
+  notes?: string;
+  groupJids?: string[];
+  groupNames?: string[];
+  lastUpdated?: string;
+}
+
+export interface VcfExportOptions {
+  jid?: string;
+  groupJids?: string[];
+  contactJids?: string[];
+  tagIds?: string[];
+  prefix?: string;
+  fileName?: string;
+  customCaption?: string;
+  sendToGroup?: boolean;
+  excludeBot?: boolean;
+  includeAdminsOnly?: boolean;
 }
 
 export interface CampaignProgress {
   id: string;
   status: 'idle' | 'running' | 'paused' | 'batch_pausing' | 'completed' | 'cancelled' | 'error';
+  targetMode?: 'groups' | 'tagged_contacts' | 'direct_contacts';
   targetGroupJids: string[];
+  targetContactJids?: string[];
+  targetTags?: string[];
   totalGroups: number;
   sentCount: number;
   failedCount: number;

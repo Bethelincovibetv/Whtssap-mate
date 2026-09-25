@@ -20,24 +20,52 @@ import {
   Send,
   Sliders,
   Eye,
-  Info
+  Info,
+  Tag,
+  Tags,
+  UserCheck
 } from 'lucide-react';
-import { EngineStatusResponse, GroupItem, CampaignProgress } from '../types';
+import { 
+  EngineStatusResponse, 
+  GroupItem, 
+  CampaignProgress,
+  TagDefinition,
+  ContactItem 
+} from '../types';
 
 interface CampaignTabProps {
   statusData: EngineStatusResponse | null;
   onRefresh: () => void;
+  preloadOptions?: {
+    mode?: 'groups' | 'tagged_contacts';
+    targetGroupJids?: string[];
+    targetTags?: string[];
+  } | null;
 }
 
-export const CampaignTab: React.FC<CampaignTabProps> = ({ statusData, onRefresh }) => {
+export const CampaignTab: React.FC<CampaignTabProps> = ({ 
+  statusData, 
+  onRefresh,
+  preloadOptions 
+}) => {
+  // Campaign Mode: Target Groups vs Target Categorized Contacts by Tag
+  const [campaignMode, setCampaignMode] = useState<'groups' | 'tagged_contacts'>('groups');
+
+  // Groups State
   const [groups, setGroups] = useState<GroupItem[]>([]);
   const [loadingGroups, setLoadingGroups] = useState(false);
   const [selectedGroupJids, setSelectedGroupJids] = useState<string[]>([]);
   const [searchGroup, setSearchGroup] = useState('');
+
+  // Tagged Contacts State
+  const [tags, setTags] = useState<TagDefinition[]>([]);
+  const [contacts, setContacts] = useState<ContactItem[]>([]);
+  const [selectedTags, setSelectedTags] = useState<string[]>([]);
+  const [loadingTagsAndContacts, setLoadingTagsAndContacts] = useState(false);
   
   // Message & Spintax State
   const [templateText, setTemplateText] = useState(
-    '{Hello|Hi|Greetings} {team|leaders|friends}! 🚀\n\n{Exciting news|Check out our latest update|Important announcement}: We have launched our new automation system.\n\n{Let us know if you have questions!|Feel free to reply directly!|Reach out for details!}'
+    '{Hello|Hi|Greetings} {name|friend}! 🚀\n\n{Exciting news|Check out our latest update|Special announcement for you}: We have launched our WhatsApp Automation System.\n\n{Let us know if you have questions!|Reply directly anytime!|Reach out for exclusive details!}'
   );
   const [imageUrl, setImageUrl] = useState('');
   const [spintaxSamples, setSpintaxSamples] = useState<string[]>([]);
@@ -54,6 +82,19 @@ export const CampaignTab: React.FC<CampaignTabProps> = ({ statusData, onRefresh 
   const [startingCampaign, setStartingCampaign] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  // Apply Preload Options from Group Manager if passed
+  useEffect(() => {
+    if (preloadOptions) {
+      if (preloadOptions.mode) setCampaignMode(preloadOptions.mode);
+      if (preloadOptions.targetGroupJids && preloadOptions.targetGroupJids.length > 0) {
+        setSelectedGroupJids(preloadOptions.targetGroupJids);
+      }
+      if (preloadOptions.targetTags && preloadOptions.targetTags.length > 0) {
+        setSelectedTags(preloadOptions.targetTags);
+      }
+    }
+  }, [preloadOptions]);
 
   // Sync campaign state from statusData
   useEffect(() => {
@@ -78,11 +119,31 @@ export const CampaignTab: React.FC<CampaignTabProps> = ({ statusData, onRefresh 
     }
   }, [statusData?.status]);
 
+  const fetchTagsAndContacts = useCallback(async () => {
+    if (statusData?.status !== 'connected') return;
+    setLoadingTagsAndContacts(true);
+    try {
+      const [tagsRes, contactsRes] = await Promise.all([
+        fetch('/api/tags'),
+        fetch('/api/contacts')
+      ]);
+      const tagsData = await tagsRes.json();
+      const contactsData = await contactsRes.json();
+      if (tagsData.tags) setTags(tagsData.tags);
+      if (contactsData.contacts) setContacts(contactsData.contacts);
+    } catch (e) {
+      console.error('Failed to fetch tags/contacts', e);
+    } finally {
+      setLoadingTagsAndContacts(false);
+    }
+  }, [statusData?.status]);
+
   useEffect(() => {
     if (statusData?.status === 'connected') {
       fetchGroups();
+      fetchTagsAndContacts();
     }
-  }, [statusData?.status, fetchGroups]);
+  }, [statusData?.status, fetchGroups, fetchTagsAndContacts]);
 
   const toggleGroupSelection = (jid: string) => {
     setSelectedGroupJids(prev => 
@@ -90,7 +151,13 @@ export const CampaignTab: React.FC<CampaignTabProps> = ({ statusData, onRefresh 
     );
   };
 
-  const handleSelectAll = () => {
+  const toggleTagSelection = (tagId: string) => {
+    setSelectedTags(prev =>
+      prev.includes(tagId) ? prev.filter(t => t !== tagId) : [...prev, tagId]
+    );
+  };
+
+  const handleSelectAllGroups = () => {
     if (selectedGroupJids.length === filteredGroups.length) {
       setSelectedGroupJids([]);
     } else {
@@ -98,9 +165,12 @@ export const CampaignTab: React.FC<CampaignTabProps> = ({ statusData, onRefresh 
     }
   };
 
-  const handleSelectAdminOnly = () => {
-    const adminJids = groups.filter(g => g.isBotAdmin).map(g => g.id);
-    setSelectedGroupJids(adminJids);
+  const handleSelectAllTags = () => {
+    if (selectedTags.length === tags.length) {
+      setSelectedTags([]);
+    } else {
+      setSelectedTags(tags.map(t => t.id));
+    }
   };
 
   const generateSpintaxPreview = async () => {
@@ -122,9 +192,26 @@ export const CampaignTab: React.FC<CampaignTabProps> = ({ statusData, onRefresh 
     }
   };
 
+  const insertVariable = (variable: string) => {
+    setTemplateText(prev => prev + variable);
+  };
+
+  // Calculate resolved target contact count for selected tags
+  const matchedTaggedContacts = contacts.filter(c => 
+    c.tags?.some(t => selectedTags.includes(t))
+  );
+
   const handleStartCampaign = async () => {
-    if (selectedGroupJids.length === 0) {
+    if (campaignMode === 'groups' && selectedGroupJids.length === 0) {
       setErrorMsg('Please select at least 1 WhatsApp group to launch campaign.');
+      return;
+    }
+    if (campaignMode === 'tagged_contacts' && selectedTags.length === 0) {
+      setErrorMsg('Please select at least 1 category tag to launch targeted broadcast.');
+      return;
+    }
+    if (campaignMode === 'tagged_contacts' && matchedTaggedContacts.length === 0) {
+      setErrorMsg('No contacts found matching the selected tags. Tag contacts in Group Manager first.');
       return;
     }
     if (!templateText && !imageUrl) {
@@ -136,18 +223,22 @@ export const CampaignTab: React.FC<CampaignTabProps> = ({ statusData, onRefresh 
     setStartingCampaign(true);
 
     try {
+      const payload = {
+        targetMode: campaignMode,
+        targetGroupJids: campaignMode === 'groups' ? selectedGroupJids : [],
+        targetTags: campaignMode === 'tagged_contacts' ? selectedTags : [],
+        templateText,
+        imageUrl,
+        minDelaySec,
+        maxDelaySec,
+        batchSize,
+        batchPauseMinutes
+      };
+
       const res = await fetch('/api/campaigns/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          targetGroupJids: selectedGroupJids,
-          templateText,
-          imageUrl,
-          minDelaySec,
-          maxDelaySec,
-          batchSize,
-          batchPauseMinutes
-        })
+        body: JSON.stringify(payload)
       });
 
       const data = await res.json();
@@ -197,7 +288,7 @@ export const CampaignTab: React.FC<CampaignTabProps> = ({ statusData, onRefresh 
         </div>
         <h3 className="text-lg font-bold text-white mb-2">Connect WhatsApp To Launch Campaigns</h3>
         <p className="text-slate-400 text-sm mb-6 leading-relaxed">
-          Link your WhatsApp number using the 8-Digit Pairing Code to broadcast multi-group messages with randomized anti-ban pacing.
+          Link your WhatsApp number using the 8-Digit Pairing Code to broadcast multi-group messages or tag-targeted direct broadcasts with randomized anti-ban pacing.
         </p>
         <button
           onClick={onRefresh}
@@ -227,13 +318,13 @@ export const CampaignTab: React.FC<CampaignTabProps> = ({ statusData, onRefresh 
                   }`}></span>
                 </span>
                 <h3 className="text-base font-bold text-white">
-                  {campaign.status === 'running' && 'Active Multi-Group Campaign in Progress'}
+                  {campaign.status === 'running' && 'Active Broadcast Campaign in Progress'}
                   {campaign.status === 'batch_pausing' && 'Anti-Ban Batch Pause Active (Resting)'}
                   {campaign.status === 'paused' && 'Campaign Paused'}
                 </h3>
               </div>
               <p className="text-xs text-slate-300">
-                Processed <span className="font-bold text-emerald-400">{campaign.sentCount}</span> of <span className="font-bold text-white">{campaign.totalGroups}</span> groups ({progressPercent}%) • {campaign.failedCount} failed
+                Processed <span className="font-bold text-emerald-400">{campaign.sentCount}</span> of <span className="font-bold text-white">{campaign.totalGroups}</span> recipients ({progressPercent}%) • {campaign.failedCount} failed
               </p>
             </div>
 
@@ -294,105 +385,215 @@ export const CampaignTab: React.FC<CampaignTabProps> = ({ statusData, onRefresh 
         </div>
       )}
 
+      {/* Campaign Mode Selection Tabs */}
+      <div className="p-1.5 rounded-2xl bg-[#111b21] border border-[#202c33] flex items-center gap-2">
+        <button
+          onClick={() => setCampaignMode('groups')}
+          className={`flex-1 flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl text-xs md:text-sm font-semibold transition-all cursor-pointer ${
+            campaignMode === 'groups'
+              ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-lg'
+              : 'text-slate-400 hover:text-white hover:bg-[#202c33]'
+          }`}
+        >
+          <Users className="w-4 h-4" />
+          <span>Multi-Group Broadcast ({selectedGroupJids.length} Selected)</span>
+        </button>
+
+        <button
+          onClick={() => setCampaignMode('tagged_contacts')}
+          className={`flex-1 flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl text-xs md:text-sm font-semibold transition-all cursor-pointer ${
+            campaignMode === 'tagged_contacts'
+              ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-lg'
+              : 'text-slate-400 hover:text-white hover:bg-[#202c33]'
+          }`}
+        >
+          <Tags className="w-4 h-4" />
+          <span>Tag-Targeted Broadcast ({matchedTaggedContacts.length} Contacts Matched)</span>
+        </button>
+      </div>
+
       {/* Main Campaign Builder Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         
-        {/* Left Column: Group Selector */}
-        <div className="lg:col-span-5 p-5 rounded-2xl bg-[#111b21] border border-[#202c33] flex flex-col space-y-4">
-          <div className="flex items-center justify-between">
-            <h4 className="font-bold text-white text-sm flex items-center gap-2">
-              <Users className="w-4 h-4 text-emerald-400" />
-              1. Select Target Groups ({selectedGroupJids.length} chosen)
-            </h4>
-            <button
-              onClick={fetchGroups}
-              className="p-1.5 rounded-lg bg-[#0b141a] hover:bg-[#202c33] text-slate-400 hover:text-emerald-400 transition-all"
-              title="Refresh groups list"
-            >
-              <RefreshCw className={`w-3.5 h-3.5 ${loadingGroups ? 'animate-spin text-emerald-400' : ''}`} />
-            </button>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <input
-              type="text"
-              value={searchGroup}
-              onChange={(e) => setSearchGroup(e.target.value)}
-              placeholder="Search groups..."
-              className="flex-1 bg-[#0b141a] border border-[#202c33] rounded-xl px-3 py-1.5 text-xs text-white placeholder-slate-600 outline-none focus:border-emerald-500"
-            />
-            <button
-              onClick={handleSelectAll}
-              className="px-2.5 py-1.5 rounded-xl bg-[#0b141a] hover:bg-[#202c33] border border-[#202c33] text-[11px] font-semibold text-slate-300 transition-all cursor-pointer shrink-0"
-            >
-              {selectedGroupJids.length === filteredGroups.length && filteredGroups.length > 0 ? 'Deselect All' : 'Select All'}
-            </button>
-            <button
-              onClick={handleSelectAdminOnly}
-              className="px-2.5 py-1.5 rounded-xl bg-[#0b141a] hover:bg-[#202c33] border border-[#202c33] text-[11px] font-semibold text-emerald-400 transition-all cursor-pointer shrink-0"
-            >
-              Admin Only
-            </button>
-          </div>
-
-          {/* Group Checklist */}
-          <div className="flex-1 max-h-96 overflow-y-auto space-y-1.5 pr-1">
-            {loadingGroups ? (
-              <div className="py-12 text-center text-slate-500 text-xs">
-                <RefreshCw className="w-5 h-5 animate-spin mx-auto mb-2 text-emerald-500" />
-                Loading WhatsApp groups...
+        {/* Left Column: Target Selector (Groups vs Tags) */}
+        <div className="lg:col-span-5 p-5 rounded-2xl bg-[#111b21] border border-[#202c33] flex flex-col space-y-4 shadow-xl">
+          
+          {/* MODE A: GROUPS SELECTOR */}
+          {campaignMode === 'groups' && (
+            <>
+              <div className="flex items-center justify-between">
+                <h4 className="font-bold text-white text-sm flex items-center gap-2">
+                  <Users className="w-4 h-4 text-emerald-400" />
+                  1. Select Target Groups ({selectedGroupJids.length} chosen)
+                </h4>
+                <button
+                  onClick={fetchGroups}
+                  className="p-1.5 rounded-lg bg-[#0b141a] hover:bg-[#202c33] text-slate-400 hover:text-emerald-400 transition-all cursor-pointer"
+                  title="Refresh groups list"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${loadingGroups ? 'animate-spin text-emerald-400' : ''}`} />
+                </button>
               </div>
-            ) : filteredGroups.length === 0 ? (
-              <div className="py-12 text-center text-slate-500 text-xs">
-                No groups found.
-              </div>
-            ) : (
-              filteredGroups.map(group => {
-                const isSelected = selectedGroupJids.includes(group.id);
-                return (
-                  <div
-                    key={group.id}
-                    onClick={() => toggleGroupSelection(group.id)}
-                    className={`p-2.5 rounded-xl border flex items-center justify-between gap-3 cursor-pointer transition-all ${
-                      isSelected
-                        ? 'bg-emerald-500/10 border-emerald-500/40 text-white'
-                        : 'bg-[#0b141a] border-[#202c33] text-slate-300 hover:border-slate-700'
-                    }`}
-                  >
-                    <div className="flex items-center gap-2.5 truncate">
-                      <div className={`w-4 h-4 rounded flex items-center justify-center border transition-all ${
-                        isSelected ? 'bg-emerald-500 border-emerald-500 text-white' : 'border-slate-600'
-                      }`}>
-                        {isSelected && <Check className="w-3 h-3 stroke-[3]" />}
-                      </div>
-                      <div className="truncate">
-                        <p className="text-xs font-semibold truncate">{group.subject}</p>
-                        <p className="text-[10px] text-slate-500 font-mono truncate">{group.id.split('@')[0]}</p>
-                      </div>
-                    </div>
 
-                    <div className="flex items-center gap-1.5 shrink-0">
-                      {group.isBotAdmin && (
-                        <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400">
-                          ADMIN
-                        </span>
-                      )}
-                      <span className="text-[10px] text-slate-400">
-                        {group.size || group.participantsCount || 0}
-                      </span>
-                    </div>
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  value={searchGroup}
+                  onChange={(e) => setSearchGroup(e.target.value)}
+                  placeholder="Search groups..."
+                  className="flex-1 bg-[#0b141a] border border-[#202c33] rounded-xl px-3 py-1.5 text-xs text-white placeholder-slate-600 outline-none focus:border-emerald-500"
+                />
+                <button
+                  onClick={handleSelectAllGroups}
+                  className="px-2.5 py-1.5 rounded-xl bg-[#0b141a] hover:bg-[#202c33] border border-[#202c33] text-[11px] font-semibold text-slate-300 transition-all cursor-pointer shrink-0"
+                >
+                  {selectedGroupJids.length === filteredGroups.length && filteredGroups.length > 0 ? 'Deselect' : 'Select All'}
+                </button>
+              </div>
+
+              {/* Group Checklist */}
+              <div className="flex-1 max-h-96 overflow-y-auto space-y-1.5 pr-1">
+                {loadingGroups ? (
+                  <div className="py-12 text-center text-slate-500 text-xs">
+                    <RefreshCw className="w-5 h-5 animate-spin mx-auto mb-2 text-emerald-500" />
+                    Loading WhatsApp groups...
                   </div>
-                );
-              })
-            )}
-          </div>
+                ) : filteredGroups.length === 0 ? (
+                  <div className="py-12 text-center text-slate-500 text-xs">
+                    No groups found.
+                  </div>
+                ) : (
+                  filteredGroups.map(group => {
+                    const isSelected = selectedGroupJids.includes(group.id);
+                    return (
+                      <div
+                        key={group.id}
+                        onClick={() => toggleGroupSelection(group.id)}
+                        className={`p-2.5 rounded-xl border flex items-center justify-between gap-3 cursor-pointer transition-all ${
+                          isSelected
+                            ? 'bg-emerald-500/10 border-emerald-500/40 text-white shadow'
+                            : 'bg-[#0b141a] border-[#202c33] text-slate-300 hover:border-slate-700'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2.5 truncate">
+                          <div className={`w-4 h-4 rounded flex items-center justify-center border transition-all ${
+                            isSelected ? 'bg-emerald-500 border-emerald-500 text-white' : 'border-slate-600'
+                          }`}>
+                            {isSelected && <Check className="w-3 h-3 stroke-[3]" />}
+                          </div>
+                          <div className="truncate">
+                            <p className="text-xs font-semibold truncate">{group.subject}</p>
+                            <p className="text-[10px] text-slate-500 font-mono truncate">{group.id.split('@')[0]}</p>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          {group.isBotAdmin && (
+                            <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400">
+                              ADMIN
+                            </span>
+                          )}
+                          <span className="text-[10px] text-slate-400">
+                            {group.size || group.participantsCount || 0}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </>
+          )}
+
+          {/* MODE B: TAGGED CONTACTS SELECTOR */}
+          {campaignMode === 'tagged_contacts' && (
+            <>
+              <div className="flex items-center justify-between">
+                <h4 className="font-bold text-white text-sm flex items-center gap-2">
+                  <Tags className="w-4 h-4 text-emerald-400" />
+                  1. Target Contact Categories ({selectedTags.length} Tags Selected)
+                </h4>
+                <button
+                  onClick={fetchTagsAndContacts}
+                  className="p-1.5 rounded-lg bg-[#0b141a] hover:bg-[#202c33] text-slate-400 hover:text-emerald-400 transition-all cursor-pointer"
+                  title="Refresh tags"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${loadingTagsAndContacts ? 'animate-spin text-emerald-400' : ''}`} />
+                </button>
+              </div>
+
+              <p className="text-xs text-slate-400">
+                Messages will be sent directly to individual chats of contacts matching any selected category tag with anti-ban delay.
+              </p>
+
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-emerald-400">
+                  Total Audience: {matchedTaggedContacts.length} Contacts
+                </span>
+                <button
+                  onClick={handleSelectAllTags}
+                  className="px-2.5 py-1 rounded-xl bg-[#0b141a] hover:bg-[#202c33] border border-[#202c33] text-[11px] font-semibold text-slate-300 transition-all cursor-pointer"
+                >
+                  {selectedTags.length === tags.length && tags.length > 0 ? 'Deselect All' : 'Select All Tags'}
+                </button>
+              </div>
+
+              {/* Tag Selector Cards */}
+              <div className="space-y-2 max-h-96 overflow-y-auto pr-1">
+                {tags.map(tag => {
+                  const isSelected = selectedTags.includes(tag.id);
+                  const count = contacts.filter(c => c.tags?.includes(tag.id)).length;
+                  return (
+                    <div
+                      key={tag.id}
+                      onClick={() => toggleTagSelection(tag.id)}
+                      className={`p-3 rounded-xl border flex items-center justify-between gap-3 cursor-pointer transition-all ${
+                        isSelected
+                          ? 'border-white/40 shadow-lg'
+                          : 'bg-[#0b141a] border-[#202c33] text-slate-300 hover:border-slate-700'
+                      }`}
+                      style={{
+                        backgroundColor: isSelected ? `${tag.color}22` : undefined,
+                        borderColor: isSelected ? tag.color : undefined
+                      }}
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className={`w-4 h-4 rounded flex items-center justify-center border transition-all ${
+                          isSelected ? 'text-white' : 'border-slate-600'
+                        }`}
+                        style={{ backgroundColor: isSelected ? tag.color : undefined, borderColor: isSelected ? tag.color : undefined }}
+                        >
+                          {isSelected && <Check className="w-3 h-3 stroke-[3]" />}
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: tag.color }} />
+                            <p className="text-xs font-bold text-white">{tag.name}</p>
+                          </div>
+                          {tag.description && (
+                            <p className="text-[10px] text-slate-400 mt-0.5">{tag.description}</p>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="text-right">
+                        <span className="text-xs font-bold text-white font-mono">{count}</span>
+                        <span className="text-[10px] text-slate-500 block">contacts</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          )}
+
         </div>
 
         {/* Right Column: Template, Spintax & Anti-Ban Config */}
         <div className="lg:col-span-7 space-y-4">
           
           {/* Spintax Message Composer */}
-          <div className="p-5 rounded-2xl bg-[#111b21] border border-[#202c33] space-y-4">
+          <div className="p-5 rounded-2xl bg-[#111b21] border border-[#202c33] space-y-4 shadow-xl">
             <div className="flex items-center justify-between">
               <h4 className="font-bold text-white text-sm flex items-center gap-2">
                 <Shuffle className="w-4 h-4 text-emerald-400" />
@@ -408,20 +609,42 @@ export const CampaignTab: React.FC<CampaignTabProps> = ({ statusData, onRefresh 
               </button>
             </div>
 
+            {/* Quick Personalization Variables Bar */}
+            {campaignMode === 'tagged_contacts' && (
+              <div className="flex flex-wrap items-center gap-1.5 bg-[#0b141a] p-2.5 rounded-xl border border-[#202c33]">
+                <span className="text-[10px] font-bold text-slate-400 uppercase mr-1">Insert Variables:</span>
+                {[
+                  { label: '{name}', desc: 'Full Name' },
+                  { label: '{first_name}', desc: 'First Name' },
+                  { label: '{phone}', desc: 'Phone Number' },
+                  { label: '{tag}', desc: 'Primary Tag' }
+                ].map(v => (
+                  <button
+                    key={v.label}
+                    type="button"
+                    onClick={() => insertVariable(v.label)}
+                    className="px-2 py-1 rounded-lg bg-[#111b21] hover:bg-emerald-600/30 text-emerald-400 text-[11px] font-mono border border-emerald-500/20 transition-all cursor-pointer"
+                  >
+                    {v.label}
+                  </button>
+                ))}
+              </div>
+            )}
+
             <div className="relative">
               <textarea
                 value={templateText}
                 onChange={(e) => setTemplateText(e.target.value)}
-                rows={5}
-                placeholder="Type your message using Spintax syntax like {Hello|Hi|Hey} {leaders|friends}..."
-                className="w-full bg-[#0b141a] border border-[#202c33] focus:border-emerald-500 rounded-xl p-3 text-xs md:text-sm text-white placeholder-slate-600 outline-none font-mono"
+                rows={6}
+                placeholder="Type message using Spintax syntax like {Hello|Hi|Hey} {name|friend}..."
+                className="w-full bg-[#0b141a] border border-[#202c33] focus:border-emerald-500 rounded-xl p-3 text-xs md:text-sm text-white placeholder-slate-600 outline-none font-mono leading-relaxed"
               />
             </div>
 
             <div className="flex items-center gap-2 text-[11px] text-slate-400 bg-[#0b141a] p-2.5 rounded-xl border border-[#202c33]">
               <Info className="w-4 h-4 text-emerald-400 shrink-0" />
               <span>
-                <strong>Spintax Tip:</strong> Wrap words in <code className="text-emerald-400">{`{Option1|Option2|Option3}`}</code>. Every single group will receive a unique variation with a different hash to prevent automated spam filters.
+                <strong>Anti-Ban Engine:</strong> Wrap words in <code className="text-emerald-400">{`{Option1|Option2|Option3}`}</code>. Each recipient receives a unique hash to prevent spam detection.
               </span>
             </div>
 
@@ -454,7 +677,7 @@ export const CampaignTab: React.FC<CampaignTabProps> = ({ statusData, onRefresh 
           </div>
 
           {/* Anti-Ban Pacing & Jitter Controls */}
-          <div className="p-5 rounded-2xl bg-[#111b21] border border-[#202c33] space-y-4">
+          <div className="p-5 rounded-2xl bg-[#111b21] border border-[#202c33] space-y-4 shadow-xl">
             <h4 className="font-bold text-white text-sm flex items-center gap-2">
               <ShieldCheck className="w-4 h-4 text-emerald-400" />
               3. Anti-Ban Pacing & Flood Safeguards
@@ -496,14 +719,14 @@ export const CampaignTab: React.FC<CampaignTabProps> = ({ statusData, onRefresh 
                   />
                   <span className="text-[10px] text-slate-500">Max (90s)</span>
                 </div>
-                <p className="text-[10px] text-slate-500">Adds unpredictable delay between every single group send.</p>
+                <p className="text-[10px] text-slate-500">Adds unpredictable delay between every single send.</p>
               </div>
 
               {/* Batch Pause Settings */}
               <div className="p-3.5 rounded-xl bg-[#0b141a] border border-[#202c33] space-y-2">
                 <div className="flex items-center justify-between text-xs font-semibold text-slate-300">
                   <span>Batch Rest Pause</span>
-                  <span className="text-emerald-400 font-mono">Rest {batchPauseMinutes}m every {batchSize} groups</span>
+                  <span className="text-emerald-400 font-mono">Rest {batchPauseMinutes}m every {batchSize} sends</span>
                 </div>
                 <div className="grid grid-cols-2 gap-2">
                   <div>
@@ -513,10 +736,10 @@ export const CampaignTab: React.FC<CampaignTabProps> = ({ statusData, onRefresh 
                       onChange={(e) => setBatchSize(Number(e.target.value))}
                       className="w-full bg-[#111b21] border border-[#202c33] rounded-lg px-2 py-1 text-xs text-white outline-none"
                     >
-                      <option value={5}>Every 5 groups</option>
-                      <option value={10}>Every 10 groups</option>
-                      <option value={15}>Every 15 groups</option>
-                      <option value={20}>Every 20 groups</option>
+                      <option value={5}>Every 5 messages</option>
+                      <option value={10}>Every 10 messages</option>
+                      <option value={15}>Every 15 messages</option>
+                      <option value={20}>Every 20 messages</option>
                     </select>
                   </div>
                   <div>
@@ -548,18 +771,25 @@ export const CampaignTab: React.FC<CampaignTabProps> = ({ statusData, onRefresh 
             {/* Launch Campaign Action */}
             <button
               onClick={handleStartCampaign}
-              disabled={startingCampaign || isCampaignActive || selectedGroupJids.length === 0}
+              disabled={
+                startingCampaign || 
+                isCampaignActive || 
+                (campaignMode === 'groups' && selectedGroupJids.length === 0) ||
+                (campaignMode === 'tagged_contacts' && selectedTags.length === 0)
+              }
               className="w-full py-3.5 px-6 rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-500 hover:from-emerald-500 hover:to-teal-400 text-white font-bold text-sm transition-all shadow-xl disabled:opacity-40 flex items-center justify-center gap-2 cursor-pointer"
             >
               {startingCampaign ? (
                 <>
                   <RefreshCw className="w-4 h-4 animate-spin" />
-                  Initiating Multi-Group Campaign...
+                  <span>Initiating Targeted Broadcast Campaign...</span>
                 </>
               ) : (
                 <>
                   <Rocket className="w-4 h-4" />
-                  Launch Multi-Group Campaign ({selectedGroupJids.length} Groups)
+                  <span>
+                    Launch {campaignMode === 'tagged_contacts' ? `Tag-Targeted Broadcast (${matchedTaggedContacts.length} Contacts)` : `Multi-Group Campaign (${selectedGroupJids.length} Groups)`}
+                  </span>
                 </>
               )}
             </button>
