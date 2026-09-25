@@ -1,12 +1,16 @@
 services:
   - type: web
-    name: whatsapp-growth-engine
+    name: whtssap-mate
     env: node
     plan: free
-    buildCommand: npm install --legacy-peer-deps && npm run build
-    startCommand: node server.js
+    buildCommand: npm install && npm run build
+    startCommand: npm run start
     envVars:
       - key: PORT
         value: 10000
       - key: NODE_VERSION
-        value: 20.18.0
+        value: 22.23.2
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: DATA_DIR
+        value: /var/data
