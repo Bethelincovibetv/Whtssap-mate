@@ -25,6 +25,7 @@ import {
 import { User } from 'firebase/auth';
 import { EngineStatusResponse } from '../types';
 import { isUserAdmin, ADMIN_EMAIL } from '../lib/firebase';
+import { AccountSwitcher } from './AccountSwitcher';
 
 export type NavTabId = 'landing' | 'ad-network' | 'connect' | 'api-keys' | 'groups' | 'campaign' | 'broadcast' | 'visibility' | 'ai' | 'logs' | 'deploy';
 
@@ -43,6 +44,10 @@ interface SidebarProps {
   onInstallClick?: () => void;
   isInstallable?: boolean;
   isInstalled?: boolean;
+  onSelectAccount?: (accountId: string) => void;
+  onAddAccount?: (label: string) => Promise<void>;
+  onDisconnectAccount?: (accountId: string) => void;
+  onRemoveAccount?: (accountId: string) => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -59,7 +64,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
   logsCount,
   onInstallClick,
   isInstallable,
-  isInstalled
+  isInstalled,
+  onSelectAccount,
+  onAddAccount,
+  onDisconnectAccount,
+  onRemoveAccount
 }) => {
   const isConnected = statusData?.status === 'connected';
   const isConnecting = statusData?.status === 'connecting';
@@ -267,6 +276,20 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <p className="text-[8px] text-slate-500 uppercase mt-0.5">AI</p>
             </div>
           </div>
+
+          {/* Sidebar Account Switcher */}
+          {statusData?.accounts && statusData.accounts.length > 0 && onSelectAccount && onAddAccount && (
+            <div className="mt-2.5 pt-2 border-t border-[#202c33]/60 flex justify-center">
+              <AccountSwitcher
+                accounts={statusData.accounts}
+                activeAccountId={statusData.activeAccountId || statusData.accounts[0]?.id || 'primary'}
+                onSelectAccount={onSelectAccount}
+                onAddAccount={onAddAccount}
+                onDisconnectAccount={onDisconnectAccount || (() => {})}
+                onRemoveAccount={onRemoveAccount || (() => {})}
+              />
+            </div>
+          )}
         </div>
 
         {/* Navigation Items (Scrollable) */}

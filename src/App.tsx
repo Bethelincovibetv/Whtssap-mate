@@ -134,6 +134,7 @@ export default function App() {
                 name: payload.name,
                 hasQr: payload.hasQr,
                 qr: payload.qr,
+                pairingCode: payload.pairingCode || null,
                 autoReact: payload.config?.autoReact ?? true,
                 autoView: payload.config?.autoView ?? true,
                 aiResponder: payload.config?.aiResponder ?? true,
@@ -145,7 +146,9 @@ export default function App() {
                 typingDelaySeconds: payload.config?.typingDelaySeconds ?? 2,
                 fallbackRules: payload.config?.fallbackRules ?? [],
                 stats: payload.stats,
-                campaign: payload.campaign
+                campaign: payload.campaign,
+                activeAccountId: payload.activeAccountId,
+                accounts: payload.accounts || prev?.accounts || []
               }));
               if (payload.logs) setLogs(payload.logs);
             } else if (payload.type === 'log') {
@@ -161,6 +164,7 @@ export default function App() {
                 name: payload.name,
                 hasQr: payload.hasQr,
                 qr: payload.qr,
+                pairingCode: payload.pairingCode || null,
                 autoReact: payload.config?.autoReact ?? prev?.autoReact ?? true,
                 autoView: payload.config?.autoView ?? prev?.autoView ?? true,
                 aiResponder: payload.config?.aiResponder ?? prev?.aiResponder ?? true,
@@ -172,7 +176,9 @@ export default function App() {
                 typingDelaySeconds: payload.config?.typingDelaySeconds ?? prev?.typingDelaySeconds ?? 2,
                 fallbackRules: payload.config?.fallbackRules ?? prev?.fallbackRules ?? [],
                 stats: payload.stats || prev?.stats,
-                campaign: payload.campaign || prev?.campaign
+                campaign: payload.campaign || prev?.campaign,
+                activeAccountId: payload.activeAccountId || prev?.activeAccountId,
+                accounts: payload.accounts || prev?.accounts || []
               }));
             }
           } catch (err) {
@@ -213,12 +219,64 @@ export default function App() {
     if (!confirm('Are you sure you want to disconnect and reset your WhatsApp session credentials?')) return;
     setIsLoggingOut(true);
     try {
-      await fetch('/api/logout', { method: 'POST' });
+      await fetch('/api/logout', { 
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accountId: statusData?.activeAccountId })
+      });
       await fetchStatus();
     } catch (e) {
       console.error('Logout error:', e);
     } finally {
       setIsLoggingOut(false);
+    }
+  };
+
+  const handleSelectAccount = async (id: string) => {
+    try {
+      const res = await fetch(`/api/accounts/${id}/select`, { method: 'POST' });
+      if (res.ok) {
+        await fetchStatus();
+      }
+    } catch (e) {
+      console.error('Error selecting account:', e);
+    }
+  };
+
+  const handleAddAccount = async (label: string) => {
+    try {
+      const res = await fetch('/api/accounts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label })
+      });
+      if (res.ok) {
+        await fetchStatus();
+      }
+    } catch (e) {
+      console.error('Error adding account:', e);
+    }
+  };
+
+  const handleDisconnectAccount = async (id: string) => {
+    try {
+      const res = await fetch(`/api/accounts/${id}/disconnect`, { method: 'POST' });
+      if (res.ok) {
+        await fetchStatus();
+      }
+    } catch (e) {
+      console.error('Error disconnecting account:', e);
+    }
+  };
+
+  const handleRemoveAccount = async (id: string) => {
+    try {
+      const res = await fetch(`/api/accounts/${id}`, { method: 'DELETE' });
+      if (res.ok) {
+        await fetchStatus();
+      }
+    } catch (e) {
+      console.error('Error removing account:', e);
     }
   };
 
@@ -245,6 +303,10 @@ export default function App() {
         onInstallClick={triggerInstall}
         isInstallable={isInstallable}
         isInstalled={isInstalled}
+        onSelectAccount={handleSelectAccount}
+        onAddAccount={handleAddAccount}
+        onDisconnectAccount={handleDisconnectAccount}
+        onRemoveAccount={handleRemoveAccount}
       />
 
       {/* Main App Layout Wrapper with Desktop Left Margin for Sidebar */}
@@ -261,6 +323,10 @@ export default function App() {
           onInstallClick={triggerInstall}
           isInstallable={isInstallable}
           isInstalled={isInstalled}
+          onSelectAccount={handleSelectAccount}
+          onAddAccount={handleAddAccount}
+          onDisconnectAccount={handleDisconnectAccount}
+          onRemoveAccount={handleRemoveAccount}
         />
 
         {/* Main Content Area */}
@@ -291,6 +357,10 @@ export default function App() {
             <ConnectTab
               statusData={statusData}
               onRefresh={fetchStatus}
+              onSelectAccount={handleSelectAccount}
+              onAddAccount={handleAddAccount}
+              onDisconnectAccount={handleDisconnectAccount}
+              onRemoveAccount={handleRemoveAccount}
             />
           )}
 

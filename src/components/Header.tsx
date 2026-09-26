@@ -22,6 +22,7 @@ import { User } from 'firebase/auth';
 import { EngineStatusResponse } from '../types';
 import { NavTabId } from './Sidebar';
 import { isUserAdmin } from '../lib/firebase';
+import { AccountSwitcher } from './AccountSwitcher';
 
 interface HeaderProps {
   statusData: EngineStatusResponse | null;
@@ -33,6 +34,10 @@ interface HeaderProps {
   onInstallClick?: () => void;
   isInstallable?: boolean;
   isInstalled?: boolean;
+  onSelectAccount?: (accountId: string) => void;
+  onAddAccount?: (label: string) => Promise<void>;
+  onDisconnectAccount?: (accountId: string) => void;
+  onRemoveAccount?: (accountId: string) => void;
 }
 
 const TAB_TITLES: Record<NavTabId, { title: string; subtitle: string; icon: any }> = {
@@ -58,7 +63,11 @@ export const Header: React.FC<HeaderProps> = ({
   onRefresh,
   onInstallClick,
   isInstallable,
-  isInstalled
+  isInstalled,
+  onSelectAccount,
+  onAddAccount,
+  onDisconnectAccount,
+  onRemoveAccount
 }) => {
   const isConnected = statusData?.status === 'connected';
   const isConnecting = statusData?.status === 'connecting';
@@ -106,6 +115,18 @@ export const Header: React.FC<HeaderProps> = ({
         {/* Right: User Auth, PWA Install, Connection Status, Refresh */}
         <div className="flex items-center gap-2 sm:gap-3">
           
+          {/* Multi-Account Switcher (Header Pill) */}
+          {statusData?.accounts && statusData.accounts.length > 0 && onSelectAccount && onAddAccount && (
+            <AccountSwitcher
+              accounts={statusData.accounts}
+              activeAccountId={statusData.activeAccountId || statusData.accounts[0]?.id || 'primary'}
+              onSelectAccount={onSelectAccount}
+              onAddAccount={onAddAccount}
+              onDisconnectAccount={onDisconnectAccount || (() => {})}
+              onRemoveAccount={onRemoveAccount || (() => {})}
+            />
+          )}
+
           {/* Google Auth Status / Login */}
           {!currentUser ? (
             <button
@@ -147,32 +168,34 @@ export const Header: React.FC<HeaderProps> = ({
             </button>
           )}
 
-          {/* Connection Status Pill */}
-          <div 
-            onClick={onOpenSidebar}
-            className="cursor-pointer"
-            title="Click to view connection & stats"
-          >
-            {isConnected ? (
-              <div className="flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-3 py-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-semibold shadow-sm shadow-emerald-950/40">
-                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-                <span className="hidden sm:inline">Connected</span>
-                <span className="font-mono text-slate-200 bg-emerald-950/70 px-1.5 py-0.2 rounded text-[11px]">
-                  +{statusData?.phone ? statusData.phone.slice(-6) : 'OK'}
-                </span>
-              </div>
-            ) : isConnecting ? (
-              <div className="flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-3 py-1.5 rounded-full bg-amber-500/10 border border-amber-500/30 text-amber-400 text-xs font-semibold">
-                <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping"></span>
-                <span className="text-[11px] sm:text-xs">Pairing...</span>
-              </div>
-            ) : (
-              <div className="flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-3 py-1.5 rounded-full bg-rose-500/10 border border-rose-500/30 text-rose-400 text-xs font-semibold">
-                <span className="w-2 h-2 rounded-full bg-rose-500"></span>
-                <span className="text-[11px] sm:text-xs">Offline</span>
-              </div>
-            )}
-          </div>
+          {/* Connection Status Pill (if no multi-account switcher is shown) */}
+          {(!statusData?.accounts || statusData.accounts.length === 0) && (
+            <div 
+              onClick={onOpenSidebar}
+              className="cursor-pointer"
+              title="Click to view connection & stats"
+            >
+              {isConnected ? (
+                <div className="flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-3 py-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-semibold shadow-sm shadow-emerald-950/40">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                  <span className="hidden sm:inline">Connected</span>
+                  <span className="font-mono text-slate-200 bg-emerald-950/70 px-1.5 py-0.2 rounded text-[11px]">
+                    +{statusData?.phone ? statusData.phone.slice(-6) : 'OK'}
+                  </span>
+                </div>
+              ) : isConnecting ? (
+                <div className="flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-3 py-1.5 rounded-full bg-amber-500/10 border border-amber-500/30 text-amber-400 text-xs font-semibold">
+                  <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping"></span>
+                  <span className="text-[11px] sm:text-xs">Pairing...</span>
+                </div>
+              ) : (
+                <div className="flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-3 py-1.5 rounded-full bg-rose-500/10 border border-rose-500/30 text-rose-400 text-xs font-semibold">
+                  <span className="w-2 h-2 rounded-full bg-rose-500"></span>
+                  <span className="text-[11px] sm:text-xs">Offline</span>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Quick Refresh Status Button */}
           <button

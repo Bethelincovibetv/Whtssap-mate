@@ -126,6 +126,22 @@ export interface CampaignProgress {
   logs: string[];
 }
 
+export interface ConnectedAccount {
+  id: string;
+  label: string;
+  phone: string | null;
+  name: string | null;
+  status: 'disconnected' | 'connecting' | 'connected';
+  phase?: string;
+  hasQr: boolean;
+  qr: string | null;
+  pairingCode?: string | null;
+  isDefault: boolean;
+  createdAt: string;
+  lastConnectedAt: string | null;
+  stats?: EngineStats;
+}
+
 export interface EngineStatusResponse {
   status: 'disconnected' | 'connecting' | 'connected';
   phase?: string;
@@ -145,6 +161,8 @@ export interface EngineStatusResponse {
   fallbackRules?: FallbackRule[];
   stats: EngineStats;
   campaign?: CampaignProgress;
+  activeAccountId?: string;
+  accounts?: ConnectedAccount[];
 }
 
 export interface ApiKeyItem {

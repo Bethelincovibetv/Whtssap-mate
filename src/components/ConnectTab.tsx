@@ -15,17 +15,33 @@ import {
   ChevronDown,
   Search,
   Globe,
-  Phone
+  Phone,
+  Users,
+  Plus,
+  Trash2,
+  LogOut,
+  X
 } from 'lucide-react';
-import { EngineStatusResponse } from '../types';
+import { EngineStatusResponse, ConnectedAccount } from '../types';
 import { COUNTRIES, DEFAULT_COUNTRY, Country } from '../data/countries';
 
 interface ConnectTabProps {
   statusData: EngineStatusResponse | null;
   onRefresh: () => void;
+  onSelectAccount?: (id: string) => void;
+  onAddAccount?: (label: string) => Promise<void>;
+  onDisconnectAccount?: (id: string) => void;
+  onRemoveAccount?: (id: string) => void;
 }
 
-export const ConnectTab: React.FC<ConnectTabProps> = ({ statusData, onRefresh }) => {
+export const ConnectTab: React.FC<ConnectTabProps> = ({ 
+  statusData, 
+  onRefresh,
+  onSelectAccount,
+  onAddAccount,
+  onDisconnectAccount,
+  onRemoveAccount
+}) => {
   const [selectedCountry, setSelectedCountry] = useState<Country>(DEFAULT_COUNTRY);
   const [phoneNumber, setPhoneNumber] = useState('');
   const [countryDropdownOpen, setCountryDropdownOpen] = useState(false);
@@ -38,10 +54,20 @@ export const ConnectTab: React.FC<ConnectTabProps> = ({ statusData, onRefresh })
   const [resetSuccess, setResetSuccess] = useState(false);
   const [showQrFallback, setShowQrFallback] = useState(false);
 
+  // Multi-Account Modal State
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [newAccountLabel, setNewAccountLabel] = useState('');
+  const [isCreatingAccount, setIsCreatingAccount] = useState(false);
+
   const dropdownRef = useRef<HTMLDivElement>(null);
 
-  const isConnected = statusData?.status === 'connected';
-  const isConnecting = statusData?.status === 'connecting';
+  const accounts = statusData?.accounts || [];
+  const activeAccountId = statusData?.activeAccountId || accounts[0]?.id || 'acc_primary';
+  const activeAccount = accounts.find(a => a.id === activeAccountId) || accounts[0];
+
+  const isConnected = activeAccount ? activeAccount.status === 'connected' : statusData?.status === 'connected';
+  const isConnecting = activeAccount ? activeAccount.status === 'connecting' : statusData?.status === 'connecting';
+  const connectedCount = accounts.filter(a => a.status === 'connected').length;
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -70,13 +96,11 @@ export const ConnectTab: React.FC<ConnectTabProps> = ({ statusData, onRefresh })
     const rawInput = phoneNumber.replace(/[^0-9]/g, '');
     if (!rawInput) return '';
 
-    // If user typed dial code already, e.g. 23480...
     const dialDigits = selectedCountry.dialCode.replace('+', '');
     if (rawInput.startsWith(dialDigits)) {
       return rawInput;
     }
 
-    // Strip leading zeros (typical in Nigerian numbers e.g. 0803... or 0704...)
     const strippedLocal = rawInput.replace(/^0+/, '');
     return dialDigits + strippedLocal;
   }, [phoneNumber, selectedCountry]);
@@ -84,7 +108,6 @@ export const ConnectTab: React.FC<ConnectTabProps> = ({ statusData, onRefresh })
   // Handle phone input change with auto-detection for paste
   const handlePhoneChange = (val: string) => {
     const cleaned = val.trim();
-    // If pasted full international with + (e.g. +1415... or +234...)
     if (cleaned.startsWith('+')) {
       const match = COUNTRIES.find(c => cleaned.startsWith(c.dialCode));
       if (match) {
@@ -112,7 +135,10 @@ export const ConnectTab: React.FC<ConnectTabProps> = ({ statusData, onRefresh })
       const res = await fetch('/api/pairing-code', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ phoneNumber: targetNumber })
+        body: JSON.stringify({ 
+          phoneNumber: targetNumber,
+          accountId: activeAccountId
+        })
       });
       const data = await res.json();
       if (res.ok && data.code) {
@@ -129,12 +155,16 @@ export const ConnectTab: React.FC<ConnectTabProps> = ({ statusData, onRefresh })
   };
 
   const handleResetSession = async () => {
-    if (!confirm('This will clear temporary authentication files and restart the WhatsApp engine cleanly. Continue?')) return;
+    if (!confirm(`This will clear temporary authentication files for ${activeAccount?.label || 'this account'} and restart cleanly. Continue?`)) return;
     setResetting(true);
     setErrorMsg(null);
     setPairingCode(null);
     try {
-      const res = await fetch('/api/reset-session', { method: 'POST' });
+      const res = await fetch('/api/reset-session', { 
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accountId: activeAccountId })
+      });
       if (res.ok) {
         setResetSuccess(true);
         setTimeout(() => setResetSuccess(false), 3500);
@@ -154,8 +184,162 @@ export const ConnectTab: React.FC<ConnectTabProps> = ({ statusData, onRefresh })
     setTimeout(() => setCopied(false), 2500);
   };
 
+  const handleCreateAccountSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newAccountLabel.trim() || !onAddAccount) return;
+    setIsCreatingAccount(true);
+    try {
+      await onAddAccount(newAccountLabel.trim());
+      setNewAccountLabel('');
+      setShowAddModal(false);
+      onRefresh();
+    } catch (err: any) {
+      setErrorMsg('Failed to create account: ' + err.message);
+    } finally {
+      setIsCreatingAccount(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
+
+      {/* Multi-Account Hub: Connected Accounts Overview */}
+      <div className="bg-[#111b21] rounded-2xl border border-[#202c33] p-5 sm:p-6 shadow-xl relative overflow-hidden">
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 pb-4 border-b border-[#202c33]">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 flex items-center justify-center shrink-0">
+              <Users className="w-5 h-5" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h2 className="text-base font-bold text-white">Connected WhatsApp Accounts</h2>
+                <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-mono font-bold">
+                  {connectedCount} of {accounts.length} Online 24/7
+                </span>
+              </div>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Manage multiple phone numbers and business lines simultaneously. Each line maintains its own 24/7 background session.
+              </p>
+            </div>
+          </div>
+
+          {onAddAccount && (
+            <button
+              onClick={() => setShowAddModal(true)}
+              className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold shadow-lg shadow-emerald-950/50 transition-all flex items-center gap-1.5 cursor-pointer shrink-0"
+            >
+              <Plus className="w-4 h-4" />
+              <span>Connect Another Account</span>
+            </button>
+          )}
+        </div>
+
+        {/* Account Cards Grid */}
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3.5 pt-4">
+          {accounts.map((acc) => {
+            const isSelected = acc.id === activeAccountId;
+            const isAccConnected = acc.status === 'connected';
+            const isAccConnecting = acc.status === 'connecting';
+
+            return (
+              <div
+                key={acc.id}
+                onClick={() => onSelectAccount && onSelectAccount(acc.id)}
+                className={`p-4 rounded-xl border transition-all cursor-pointer flex flex-col justify-between gap-3 relative ${
+                  isSelected
+                    ? 'bg-gradient-to-br from-emerald-950/40 via-[#111b21] to-[#111b21] border-emerald-500/50 shadow-md shadow-emerald-950/50'
+                    : 'bg-[#0b141a]/60 border-[#202c33] hover:border-slate-700 hover:bg-[#0b141a]'
+                }`}
+              >
+                <div>
+                  <div className="flex items-center justify-between gap-2 mb-2">
+                    <div className="flex items-center gap-2">
+                      <div className="w-7 h-7 rounded-lg bg-[#111b21] border border-[#202c33] flex items-center justify-center text-xs font-bold text-slate-200">
+                        {acc.phone ? acc.phone.slice(-2) : '#'}
+                      </div>
+                      <span className="text-xs font-bold text-white truncate max-w-[130px]">
+                        {acc.label}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-1">
+                      {isSelected ? (
+                        <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500 text-slate-950 font-bold flex items-center gap-1">
+                          <Check className="w-3 h-3 stroke-[3]" />
+                          <span>Active</span>
+                        </span>
+                      ) : (
+                        <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 group-hover:text-slate-200">
+                          Click to Manage
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="space-y-1">
+                    <p className="text-sm font-mono font-bold text-slate-100 flex items-center gap-1.5">
+                      <span className={`w-2 h-2 rounded-full ${
+                        isAccConnected 
+                          ? 'bg-emerald-400 animate-pulse' 
+                          : isAccConnecting 
+                          ? 'bg-amber-400 animate-ping' 
+                          : 'bg-rose-500'
+                      }`} />
+                      <span>{acc.phone ? `+${acc.phone}` : 'Unpaired Account'}</span>
+                    </p>
+                    <p className="text-[11px] text-slate-400">
+                      {isAccConnected 
+                        ? `Connected (${acc.name || 'Live'}) • Auto-Responder Online` 
+                        : isAccConnecting 
+                        ? 'Pairing Code / QR generated' 
+                        : 'Ready to pair with phone number'}
+                    </p>
+                  </div>
+                </div>
+
+                {/* Account Card Bottom Actions */}
+                <div className="pt-2 border-t border-[#202c33]/60 flex items-center justify-between text-xs">
+                  <div className="text-[10px] text-slate-500 font-mono">
+                    {acc.stats ? `${acc.stats.statusesViewed} views • ${acc.stats.reactionsSent} reacts` : 'Multi-Auth'}
+                  </div>
+
+                  <div className="flex items-center gap-1.5">
+                    {isAccConnected && onDisconnectAccount && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (confirm(`Disconnect account "${acc.label}"?`)) {
+                            onDisconnectAccount(acc.id);
+                          }
+                        }}
+                        className="p-1 px-2 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 text-[10px] font-semibold border border-rose-500/20 transition-colors"
+                        title="Disconnect session"
+                      >
+                        Disconnect
+                      </button>
+                    )}
+
+                    {accounts.length > 1 && onRemoveAccount && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (confirm(`Delete account "${acc.label}" completely?`)) {
+                            onRemoveAccount(acc.id);
+                          }
+                        }}
+                        className="p-1 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 transition-colors"
+                        title="Delete account"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
       
       {/* Connected State Banner */}
       {isConnected && (
@@ -166,11 +350,11 @@ export const ConnectTab: React.FC<ConnectTabProps> = ({ statusData, onRefresh })
             </div>
             <div>
               <h3 className="text-base font-bold text-white flex items-center gap-2">
-                WhatsApp Linked & Active
+                WhatsApp Linked & Active ({activeAccount?.label})
                 <span className="text-xs px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 font-mono font-medium border border-emerald-500/30">Live Online</span>
               </h3>
               <p className="text-xs text-slate-300 mt-0.5">
-                Connected as <strong className="text-emerald-400 font-mono font-bold">+{statusData?.phone}</strong> ({statusData?.name || 'Primary WhatsApp'}).
+                Connected as <strong className="text-emerald-400 font-mono font-bold">+{activeAccount?.phone || statusData?.phone}</strong> ({activeAccount?.name || 'Primary WhatsApp'}).
                 Auto-viewing, auto-reacting, and AI responses are live.
               </p>
             </div>
@@ -202,7 +386,9 @@ export const ConnectTab: React.FC<ConnectTabProps> = ({ statusData, onRefresh })
                 </div>
                 <div>
                   <h2 className="text-base font-bold text-white">Link with Phone Number</h2>
-                  <p className="text-[11px] text-slate-400">Official WhatsApp 8-digit pairing code</p>
+                  <p className="text-[11px] text-slate-400">
+                    Pairing Target: <strong className="text-emerald-400">{activeAccount?.label || 'Account 1'}</strong>
+                  </p>
                 </div>
               </div>
               <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
@@ -211,7 +397,7 @@ export const ConnectTab: React.FC<ConnectTabProps> = ({ statusData, onRefresh })
             </div>
 
             <p className="text-xs text-slate-300 leading-relaxed mb-5">
-              Select your country and enter your WhatsApp phone number. You will receive an official 8-digit pairing code to enter on your phone. <span className="text-emerald-400 font-medium">No second phone or camera required.</span>
+              Select your country and enter your WhatsApp phone number to generate an official 8-digit pairing code for <span className="text-emerald-400 font-bold">{activeAccount?.label}</span>. <span className="text-emerald-400 font-medium">No camera or second screen needed.</span>
             </p>
 
             <form onSubmit={handleRequestPairing} className="space-y-4">
@@ -318,132 +504,103 @@ export const ConnectTab: React.FC<ConnectTabProps> = ({ statusData, onRefresh })
                   <div className="flex items-center justify-between px-1 text-[11px] text-slate-400 pt-1">
                     <div className="flex items-center gap-1.5 text-emerald-400 font-medium">
                       <Check className="w-3.5 h-3.5" />
-                      <span>Ready to link:</span>
-                      <strong className="font-mono text-white">+{fullInternationalNumber}</strong>
+                      <span>Ready to link: <strong>+{fullInternationalNumber}</strong></span>
                     </div>
-                    {phoneNumber.startsWith('0') && (
-                      <span className="text-slate-500 text-[10px] italic">Leading 0 stripped automatically</span>
-                    )}
                   </div>
                 )}
               </div>
 
+              {/* Error Notification */}
               {errorMsg && (
-                <div className="p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs flex items-start gap-2">
+                <div className="p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs flex items-start gap-2.5">
                   <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
-                  <div className="space-y-1">
-                    <p>{errorMsg}</p>
-                    <button
-                      type="button"
-                      onClick={handleResetSession}
-                      className="underline text-rose-200 hover:text-white font-medium cursor-pointer"
-                    >
-                      Click here to reset & restart WhatsApp socket
-                    </button>
+                  <div className="flex-1">
+                    <p className="font-semibold">Pairing Error</p>
+                    <p className="mt-0.5 text-rose-300/90">{errorMsg}</p>
                   </div>
                 </div>
               )}
 
+              {/* Reset Session Success Banner */}
               {resetSuccess && (
                 <div className="p-3.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs flex items-center gap-2">
-                  <Check className="w-4 h-4 text-emerald-400 shrink-0" />
-                  <span>Session reset successfully! Socket is ready for a fresh connection.</span>
+                  <Check className="w-4 h-4 text-emerald-400" />
+                  <span>Session storage cleared. Engine restarted fresh for {activeAccount?.label}!</span>
                 </div>
               )}
 
-              <div className="flex flex-col sm:flex-row gap-2 pt-1">
-                <button
-                  type="submit"
-                  disabled={isConnected || loading || resetting || !fullInternationalNumber}
-                  className="flex-1 py-3.5 px-4 rounded-xl bg-gradient-to-r from-[#128C7E] to-[#25D366] hover:from-[#075E54] hover:to-[#128C7E] disabled:from-slate-800 disabled:to-slate-800 disabled:text-slate-600 text-white font-bold text-sm transition-all shadow-lg shadow-emerald-950/40 flex items-center justify-center gap-2 cursor-pointer disabled:cursor-not-allowed"
-                >
-                  {loading ? (
-                    <>
-                      <RefreshCw className="w-4 h-4 animate-spin text-white" />
-                      <span>Requesting 8-Digit Code...</span>
-                    </>
-                  ) : isConnected ? (
-                    <>
-                      <Check className="w-4 h-4 text-emerald-300" />
-                      <span>Device Connected</span>
-                    </>
-                  ) : (
-                    <>
-                      <span>Get 8-Digit Pairing Code</span>
-                      <ArrowRight className="w-4 h-4" />
-                    </>
-                  )}
-                </button>
-
-                <button
-                  type="button"
-                  onClick={handleResetSession}
-                  disabled={loading || resetting}
-                  className="py-3 px-3.5 rounded-xl bg-[#0b141a] hover:bg-[#202c33] border border-[#202c33] text-slate-300 hover:text-white text-xs font-semibold transition-all flex items-center justify-center gap-1.5 cursor-pointer"
-                  title="Clear any cached or stuck session"
-                >
-                  <RotateCcw className={`w-3.5 h-3.5 ${resetting ? 'animate-spin' : ''}`} />
-                  <span>{resetting ? 'Resetting...' : 'Reset Session'}</span>
-                </button>
-              </div>
+              {/* Submit Button */}
+              <button
+                type="submit"
+                disabled={loading || isConnected || !fullInternationalNumber}
+                className="w-full py-4 px-6 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold text-sm shadow-lg shadow-emerald-950/60 transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+              >
+                {loading ? (
+                  <>
+                    <RefreshCw className="w-4 h-4 animate-spin" />
+                    <span>Connecting Baileys Socket...</span>
+                  </>
+                ) : (
+                  <>
+                    <span>Generate Official 8-Digit Pairing Code</span>
+                    <ArrowRight className="w-4 h-4" />
+                  </>
+                )}
+              </button>
             </form>
 
-            {/* Pairing Code Display Card */}
-            {pairingCode && (
-              <div className="mt-6 p-5 rounded-2xl bg-[#0b141a] border border-emerald-500/40 shadow-inner">
-                <div className="text-center">
-                  <div className="flex items-center justify-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-slate-400 mb-2">
-                    <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
+            {/* Live Pairing Code Output Display */}
+            {(pairingCode || activeAccount?.pairingCode) && (
+              <div className="mt-6 p-5 rounded-2xl bg-gradient-to-br from-emerald-950/50 to-[#0b141a] border-2 border-emerald-500/60 shadow-2xl space-y-4">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs uppercase font-bold tracking-wider text-emerald-400 flex items-center gap-1.5">
+                    <Sparkles className="w-3.5 h-3.5" />
                     <span>Your WhatsApp Pairing Code</span>
-                  </div>
+                  </span>
+                  <span className="text-[10px] text-slate-400 font-mono">Expires in ~60s</span>
+                </div>
 
-                  <div className="flex items-center justify-center gap-3 my-3">
-                    <div className="font-mono text-3xl md:text-4xl font-extrabold tracking-widest text-emerald-400 bg-emerald-950/40 px-6 py-3 rounded-xl border border-emerald-500/40 shadow-lg select-all">
-                      {pairingCode}
-                    </div>
-                    <button
-                      onClick={handleCopyCode}
-                      className="p-3.5 rounded-xl bg-[#202c33] hover:bg-[#2a3942] active:scale-95 text-slate-200 hover:text-white transition-all border border-slate-700/50 shadow-md cursor-pointer"
-                      title="Copy code to clipboard"
-                    >
-                      {copied ? <Check className="w-5 h-5 text-emerald-400" /> : <Copy className="w-5 h-5" />}
-                    </button>
-                  </div>
+                <div className="flex items-center justify-between gap-3 bg-[#0b141a] border border-emerald-500/40 p-4 rounded-xl">
+                  <span className="text-2xl sm:text-3xl font-mono font-black tracking-widest text-emerald-300 select-all">
+                    {pairingCode || activeAccount?.pairingCode}
+                  </span>
+                  <button
+                    onClick={handleCopyCode}
+                    className="p-3 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 font-semibold text-xs transition-colors flex items-center gap-1.5 cursor-pointer"
+                  >
+                    {copied ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
+                    <span>{copied ? 'Copied!' : 'Copy Code'}</span>
+                  </button>
+                </div>
 
-                  {copied && (
-                    <div className="text-xs text-emerald-400 font-semibold mb-2 animate-bounce">
-                      ✓ Copied to clipboard!
-                    </div>
-                  )}
-
-                  {/* Step-by-Step Instructions */}
-                  <div className="mt-4 text-left p-4 rounded-xl bg-[#111b21] border border-[#202c33] text-xs space-y-2">
-                    <div className="font-bold text-emerald-400 flex items-center gap-1.5 mb-1 text-xs">
-                      <span>📱</span> Complete linking on your phone:
-                    </div>
-                    <ol className="list-decimal list-inside space-y-1 text-slate-300 leading-relaxed text-[11px]">
-                      <li>Open <strong className="text-white">WhatsApp</strong> on your mobile phone.</li>
-                      <li>Tap <strong className="text-white">Settings</strong> (or 3 dots at top right) &gt; <strong className="text-white">Linked Devices</strong>.</li>
-                      <li>Tap <strong className="text-white">Link a Device</strong>.</li>
-                      <li>Tap <strong className="text-emerald-400 underline">Link with phone number instead</strong> (at the bottom).</li>
-                      <li>Type in the 8-digit code <strong className="text-emerald-400 font-mono">{pairingCode}</strong>.</li>
-                    </ol>
-                  </div>
+                <div className="space-y-1.5 text-xs text-slate-300 bg-[#0b141a]/60 p-3 rounded-xl border border-[#202c33]">
+                  <p className="font-bold text-white flex items-center gap-1.5">
+                    <span>📱 How to enter code on WhatsApp:</span>
+                  </p>
+                  <ol className="list-decimal list-inside space-y-1 text-slate-300 text-[11px] leading-relaxed pl-1">
+                    <li>Open <strong>WhatsApp</strong> on your phone</li>
+                    <li>Tap <strong>Settings</strong> (iOS) or <strong>Three Dots</strong> (Android) &gt; <strong>Linked Devices</strong></li>
+                    <li>Tap <strong>Link a Device</strong></li>
+                    <li>Tap <strong>Link with phone number instead</strong> at the bottom</li>
+                    <li>Enter the 8-digit code shown above</li>
+                  </ol>
                 </div>
               </div>
             )}
+
           </div>
 
-          <div className="mt-6 pt-4 border-t border-[#202c33] flex items-center justify-between text-[11px] text-slate-400">
-            <span className="flex items-center gap-1">
-              <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-              <span>Encrypted WhatsApp Protocol</span>
-            </span>
+          {/* Bottom Actions: Reset Session */}
+          <div className="mt-6 pt-4 border-t border-[#202c33] flex items-center justify-between text-xs text-slate-400">
+            <span className="text-[11px]">Stuck or need a clean start?</span>
             <button
-              onClick={() => setShowQrFallback(!showQrFallback)}
-              className="text-slate-400 hover:text-emerald-400 underline cursor-pointer"
+              type="button"
+              onClick={handleResetSession}
+              disabled={resetting}
+              className="text-slate-400 hover:text-amber-400 flex items-center gap-1.5 transition-colors cursor-pointer text-xs"
             >
-              {showQrFallback ? 'Hide QR Code' : 'QR Code Scanner fallback'}
+              <RotateCcw className={`w-3.5 h-3.5 ${resetting ? 'animate-spin' : ''}`} />
+              <span>{resetting ? 'Restarting socket...' : 'Reset Session'}</span>
             </button>
           </div>
         </div>
@@ -458,7 +615,7 @@ export const ConnectTab: React.FC<ConnectTabProps> = ({ statusData, onRefresh })
                 </div>
                 <div>
                   <h2 className="text-base font-bold text-white">Scan QR Code</h2>
-                  <p className="text-[11px] text-slate-400">Instant QR Camera fallback</p>
+                  <p className="text-[11px] text-slate-400">Camera pairing fallback for {activeAccount?.label}</p>
                 </div>
               </div>
               <button
@@ -476,18 +633,18 @@ export const ConnectTab: React.FC<ConnectTabProps> = ({ statusData, onRefresh })
 
             {/* QR Box */}
             <div className="flex flex-col items-center justify-center p-6 bg-[#0b141a] rounded-2xl border border-[#202c33] min-h-[240px]">
-              {statusData?.qr ? (
+              {(activeAccount?.qr || statusData?.qr) ? (
                 <div className="text-center space-y-3">
                   <div className="p-3 bg-white rounded-2xl shadow-xl inline-block border-2 border-emerald-500/40">
                     <img
-                      src={statusData.qr}
+                      src={activeAccount?.qr || statusData?.qr || ''}
                       alt="WhatsApp QR Code"
                       className="w-44 h-44 object-contain rounded-lg"
                     />
                   </div>
                   <p className="text-[11px] text-emerald-400 font-semibold flex items-center justify-center gap-1">
                     <Zap className="w-3.5 h-3.5" />
-                    <span>Live QR Code Active</span>
+                    <span>Live QR Code Active ({activeAccount?.label})</span>
                   </p>
                 </div>
               ) : isConnected ? (
@@ -496,7 +653,7 @@ export const ConnectTab: React.FC<ConnectTabProps> = ({ statusData, onRefresh })
                     <CheckCircle className="w-6 h-6" />
                   </div>
                   <p className="text-sm font-bold text-white">Session Active</p>
-                  <p className="text-xs text-slate-400">Your device is linked to WhatsApp.</p>
+                  <p className="text-xs text-slate-400">Account <strong>{activeAccount?.label}</strong> is linked & online.</p>
                 </div>
               ) : (
                 <div className="text-center p-6 space-y-3">
@@ -518,12 +675,91 @@ export const ConnectTab: React.FC<ConnectTabProps> = ({ statusData, onRefresh })
           </div>
 
           <div className="mt-6 pt-4 border-t border-[#202c33] flex items-center justify-between text-[11px] text-slate-400">
-            <span>Session Auth: <code className="text-emerald-400">./session_auth</code></span>
-            <span className="text-[10px] text-slate-500">Persistent MultiFileAuth</span>
+            <span>Session Auth: <code className="text-emerald-400">./session_auth/{activeAccountId}</code></span>
+            <span className="text-[10px] text-slate-500">Multi-Session</span>
           </div>
         </div>
 
       </div>
+
+      {/* Modal: Add New Account */}
+      {showAddModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in">
+          <div 
+            className="w-full max-w-sm bg-[#111b21] border border-[#202c33] rounded-2xl shadow-2xl p-5 text-slate-100 relative"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              onClick={() => setShowAddModal(false)}
+              className="absolute top-4 right-4 text-slate-400 hover:text-white p-1 rounded-lg hover:bg-[#202c33] transition-colors cursor-pointer"
+            >
+              <X className="w-4 h-4" />
+            </button>
+
+            <div className="flex items-center gap-2.5 mb-3">
+              <div className="w-9 h-9 rounded-xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center">
+                <Smartphone className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-sm font-bold text-white">Connect Another Account</h3>
+                <p className="text-[11px] text-slate-400">Independent WhatsApp line & session</p>
+              </div>
+            </div>
+
+            <form onSubmit={handleCreateAccountSubmit} className="space-y-4 my-4">
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1.5">
+                  Account Name / Label
+                </label>
+                <input
+                  type="text"
+                  value={newAccountLabel}
+                  onChange={(e) => setNewAccountLabel(e.target.value)}
+                  placeholder="e.g. Sales SIM 2, Support Line, Nigeria SIM"
+                  className="w-full px-3 py-2.5 rounded-xl bg-[#0b141a] border border-[#202c33] text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
+                  required
+                  autoFocus
+                />
+              </div>
+
+              <div className="p-3 rounded-xl bg-[#0b141a] border border-[#202c33] text-[11px] text-slate-400 space-y-1">
+                <p className="text-slate-300 font-semibold flex items-center gap-1 text-emerald-400">
+                  <ShieldCheck className="w-3.5 h-3.5" />
+                  Independent Multi-Session
+                </p>
+                <p>This account will run concurrently in the background with its own keepalive loop, auto-responder, and campaigns.</p>
+              </div>
+
+              <div className="flex items-center gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setShowAddModal(false)}
+                  className="flex-1 py-2 px-3 rounded-xl bg-[#0b141a] hover:bg-[#202c33] text-slate-300 text-xs font-semibold border border-[#202c33] transition-colors cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isCreatingAccount || !newAccountLabel.trim()}
+                  className="flex-1 py-2 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold transition-all shadow-md shadow-emerald-950/40 cursor-pointer disabled:opacity-50 flex items-center justify-center gap-1.5"
+                >
+                  {isCreatingAccount ? (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      <span>Creating...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>Proceed to Pair</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {/* Feature Highlights Banner */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
