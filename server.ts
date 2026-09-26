@@ -434,6 +434,14 @@ function broadcastStateUpdate() {
 
 function extractMessageText(message: any): string {
   if (!message) return '';
+  // Unwrap nested message wrappers (ephemeral, viewOnce, edited, etc.)
+  if (message.ephemeralMessage?.message) return extractMessageText(message.ephemeralMessage.message);
+  if (message.viewOnceMessage?.message) return extractMessageText(message.viewOnceMessage.message);
+  if (message.viewOnceMessageV2?.message) return extractMessageText(message.viewOnceMessageV2.message);
+  if (message.documentWithCaptionMessage?.message) return extractMessageText(message.documentWithCaptionMessage.message);
+  if (message.editedMessage?.message) return extractMessageText(message.editedMessage.message);
+  if (message.protocolMessage?.editedMessage) return extractMessageText(message.protocolMessage.editedMessage);
+
   return (
     message.conversation ||
     message.extendedTextMessage?.text ||
@@ -702,121 +710,141 @@ async function initWhatsApp(forceFresh = false) {
         }
 
         // 2. Direct 1-on-1 Messages (AI Auto-Responder with Gemini & Smart Rule Fallbacks)
-        if (remoteJid && remoteJid.endsWith('@s.whatsapp.net') && !fromMe && config.aiResponder) {
+        const isDirectMessage = remoteJid && 
+          !remoteJid.endsWith('@g.us') && 
+          remoteJid !== 'status@broadcast' && 
+          !remoteJid.includes('@broadcast');
+
+        if (isDirectMessage && !fromMe) {
           const text = extractMessageText(msg.message);
+          const senderName = msg.pushName || 'Customer';
+          const senderPhone = remoteJid.split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
+
+          // Automatically record contact in contact manager & audience list
+          recordContact(remoteJid, senderName);
 
           if (!text || text.startsWith('/skip') || text.startsWith('!stop')) continue;
 
-          const senderName = msg.pushName || 'Customer';
-          const senderPhone = remoteJid.split('@')[0];
-          const textLower = text.toLowerCase();
+          if (config.aiResponder) {
+            const textLower = text.toLowerCase();
 
-          // Check Keyword Trigger Filter
-          if (config.aiTriggerMode === 'keywords_only') {
-            const hasMatchingTrigger = (config.triggerKeywords || []).some(kw => 
-              textLower.includes(kw.toLowerCase())
-            );
-            if (!hasMatchingTrigger) {
-              console.log(`[AI Responder] Skipped message from +${senderPhone} (No matching trigger keyword)`);
-              continue;
+            // Check Keyword Trigger Filter
+            if (config.aiTriggerMode === 'keywords_only') {
+              const hasMatchingTrigger = (config.triggerKeywords || []).some(kw => 
+                textLower.includes(kw.toLowerCase())
+              );
+              if (!hasMatchingTrigger) {
+                console.log(`[AI Responder] Skipped message from +${senderPhone} (No matching trigger keyword)`);
+                continue;
+              }
             }
-          }
 
-          addLog(`📥 Incoming DM from ${senderName} (+${senderPhone}): "${text}"`, 'info', 'ai');
+            addLog(`📥 Incoming DM from ${senderName} (+${senderPhone}): "${text}"`, 'info', 'ai');
 
-          // Forward to external Webhook if configured
-          if (webhookConfig.enabled && webhookConfig.url) {
-            fetch(webhookConfig.url, {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                ...(webhookConfig.secret ? { 'x-webhook-secret': webhookConfig.secret } : {})
-              },
-              body: JSON.stringify({
-                event: 'message.received',
-                from: senderPhone,
-                name: senderName,
-                text: text,
-                timestamp: new Date().toISOString()
-              })
-            }).catch((err: any) => console.warn('[Webhook Dispatch Error]', err?.message));
-          }
+            // Forward to external Webhook if configured
+            if (webhookConfig.enabled && webhookConfig.url) {
+              fetch(webhookConfig.url, {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  ...(webhookConfig.secret ? { 'x-webhook-secret': webhookConfig.secret } : {})
+                },
+                body: JSON.stringify({
+                  event: 'message.received',
+                  from: senderPhone,
+                  name: senderName,
+                  text: text,
+                  timestamp: new Date().toISOString()
+                })
+              }).catch((err: any) => console.warn('[Webhook Dispatch Error]', err?.message));
+            }
 
-          // Check Fallback Rules first
-          const matchedRule = (config.fallbackRules || []).find(r => 
-            r.enabled && r.keywords.some(k => textLower.includes(k.toLowerCase()))
-          );
+            // Check Fallback Rules first
+            const matchedRule = (config.fallbackRules || []).find(r => 
+              r.enabled && r.keywords.some(k => textLower.includes(k.toLowerCase()))
+            );
 
-          let replyText = '';
+            let replyText = '';
 
-          if (matchedRule) {
-            replyText = matchedRule.reply;
-            addLog(`🎯 Matched Rule Response for keyword: "${matchedRule.keywords.join(', ')}"`, 'info', 'ai');
-          }
+            if (matchedRule) {
+              replyText = matchedRule.reply;
+              addLog(`🎯 Matched Rule Response for keyword: "${matchedRule.keywords.join(', ')}"`, 'info', 'ai');
+            }
 
-          // If no rule matched, process with Gemini AI
-          if (!replyText) {
-            try {
-              const apiKey = config.geminiKey || process.env.GEMINI_API_KEY;
-              if (apiKey) {
-                const ai = new GoogleGenAI({
-                  apiKey: apiKey,
-                  httpOptions: {
-                    headers: {
-                      'User-Agent': 'aistudio-build'
+            // If no rule matched, process with Gemini AI
+            if (!replyText) {
+              try {
+                const apiKey = config.geminiKey || process.env.GEMINI_API_KEY;
+                if (apiKey) {
+                  const ai = new GoogleGenAI({
+                    apiKey: apiKey,
+                    httpOptions: {
+                      headers: {
+                        'User-Agent': 'aistudio-build'
+                      }
                     }
+                  });
+
+                  const prompt = `A customer named "${senderName}" (+${senderPhone}) sent the following message on WhatsApp: "${text}". Reply to them following these business instructions:\n\n${config.systemPrompt}\n\nKeep the reply natural, friendly, formatted for WhatsApp (use *bold* where appropriate), and concise.`;
+
+                  try {
+                    const response = await ai.models.generateContent({
+                      model: 'gemini-2.5-flash',
+                      contents: prompt
+                    });
+                    replyText = response?.text?.trim() || '';
+                  } catch (modelErr) {
+                    const response = await ai.models.generateContent({
+                      model: 'gemini-3.8-flash',
+                      contents: prompt
+                    });
+                    replyText = response?.text?.trim() || '';
                   }
-                });
-
-                const prompt = `A customer named "${senderName}" (+${senderPhone}) sent the following message on WhatsApp: "${text}". Reply to them following these business instructions:\n\n${config.systemPrompt}\n\nKeep the reply natural, friendly, formatted for WhatsApp (use *bold* where appropriate), and concise.`;
-
-                try {
-                  const response = await ai.models.generateContent({
-                    model: 'gemini-2.5-flash',
-                    contents: prompt
-                  });
-                  replyText = response?.text?.trim() || '';
-                } catch (modelErr) {
-                  const response = await ai.models.generateContent({
-                    model: 'gemini-3.8-flash',
-                    contents: prompt
-                  });
-                  replyText = response?.text?.trim() || '';
+                } else {
+                  // If API Key is missing and we have fallback rules, find the first default rule or give polite standard answer
+                  if (config.fallbackRules && config.fallbackRules.length > 0) {
+                    replyText = config.fallbackRules[0].reply;
+                  } else {
+                    replyText = 'Hello! Thank you for contacting us. We have received your message and our team will get back to you shortly.';
+                  }
                 }
-              } else {
-                // If API Key is missing and we have fallback rules, find the first default rule or give polite standard answer
+              } catch (aiErr: any) {
+                console.error('Gemini AI generation failed:', aiErr?.message);
+                addLog(`❌ AI Responder error: ${aiErr?.message}`, 'error', 'ai');
                 if (config.fallbackRules && config.fallbackRules.length > 0) {
                   replyText = config.fallbackRules[0].reply;
                 }
               }
-            } catch (aiErr: any) {
-              console.error('Gemini AI generation failed:', aiErr?.message);
-              addLog(`❌ AI Responder error: ${aiErr?.message}`, 'error', 'ai');
             }
-          }
 
-          // Send Reply with Typing Presence Simulation
-          if (replyText && sock) {
-            const typingDuration = (config.typingDelaySeconds || 2) * 1000;
-            try {
-              await sock.sendPresenceUpdate('composing', remoteJid);
-            } catch (e) {}
-
-            setTimeout(async () => {
+            // Send Reply with Typing Presence Simulation
+            if (replyText && sock) {
+              const typingDuration = Math.max(1000, (config.typingDelaySeconds || 2) * 1000);
               try {
-                if (sock) {
-                  await sock.sendMessage(remoteJid, { text: replyText }, { quoted: msg });
-                  stats.aiRepliesSent++;
-                  addLog(`🤖 Sent AI Reply to ${senderName}: "${replyText.slice(0, 60)}..."`, 'success', 'ai');
-                  try {
-                    await sock.sendPresenceUpdate('paused', remoteJid);
-                  } catch (e) {}
-                  broadcastStateUpdate();
+                await sock.sendPresenceUpdate('composing', remoteJid);
+              } catch (e) {}
+
+              setTimeout(async () => {
+                try {
+                  if (sock) {
+                    try {
+                      await sock.sendMessage(remoteJid, { text: replyText }, { quoted: msg });
+                    } catch (quotedErr) {
+                      await sock.sendMessage(remoteJid, { text: replyText });
+                    }
+                    stats.aiRepliesSent++;
+                    addLog(`🤖 Sent AI Reply to ${senderName}: "${replyText.slice(0, 60)}..."`, 'success', 'ai');
+                    try {
+                      await sock.sendPresenceUpdate('paused', remoteJid);
+                    } catch (e) {}
+                    broadcastStateUpdate();
+                  }
+                } catch (sendErr: any) {
+                  console.error('Error sending AI reply:', sendErr?.message);
+                  addLog(`❌ Failed to send AI reply to ${senderName}: ${sendErr?.message}`, 'error', 'ai');
                 }
-              } catch (sendErr: any) {
-                console.error('Error sending AI reply:', sendErr?.message);
-              }
-            }, typingDuration);
+              }, typingDuration);
+            }
           }
         }
       }
@@ -2299,6 +2327,9 @@ app.post('/api/ai/test', async (req: Request, res: Response) => {
 
 // Dev / Prod Vite Middleware Mount
 async function startServer() {
+  const distDir = path.join(__dirname, 'dist');
+  const publicDir = path.join(__dirname, 'public');
+
   if (!isProduction) {
     try {
       const { createServer: createViteServer } = await import('vite');
@@ -2308,28 +2339,37 @@ async function startServer() {
       });
       app.use(vite.middlewares);
     } catch (e) {
-      console.log('Running in static server mode');
-      const distDir = path.join(__dirname, 'dist');
-      const publicDir = path.join(__dirname, 'public');
+      console.log('Running in static server mode (dev)');
       if (fs.existsSync(distDir)) {
         app.use(express.static(distDir));
-      } else if (fs.existsSync(publicDir)) {
-        app.use(express.static(publicDir));
+        app.get('*', (req, res) => res.sendFile(path.join(distDir, 'index.html')));
       }
     }
   } else {
-    const distDir = path.join(__dirname, 'dist');
-    const publicDir = path.join(__dirname, 'public');
-    if (fs.existsSync(distDir)) {
+    // Production Mode
+    if (fs.existsSync(distDir) && fs.existsSync(path.join(distDir, 'index.html'))) {
       app.use(express.static(distDir));
       app.get('*', (req, res) => {
         res.sendFile(path.join(distDir, 'index.html'));
       });
-    } else if (fs.existsSync(publicDir)) {
-      app.use(express.static(publicDir));
-      app.get('*', (req, res) => {
-        res.sendFile(path.join(publicDir, 'index.html'));
-      });
+    } else {
+      console.log('Production build dist/ not found, mounting dynamic Vite middleware fallback...');
+      try {
+        const { createServer: createViteServer } = await import('vite');
+        const vite = await createViteServer({
+          server: { middlewareMode: true },
+          appType: 'spa'
+        });
+        app.use(vite.middlewares);
+      } catch (viteErr) {
+        if (fs.existsSync(distDir)) {
+          app.use(express.static(distDir));
+          app.get('*', (req, res) => res.sendFile(path.join(distDir, 'index.html')));
+        } else if (fs.existsSync(publicDir)) {
+          app.use(express.static(publicDir));
+          app.get('*', (req, res) => res.sendFile(path.join(publicDir, 'index.html')));
+        }
+      }
     }
   }
 

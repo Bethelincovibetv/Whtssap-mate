@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "tsx server.ts",
     "build": "vite build && cp -r dist/* public/",
+    "postinstall": "vite build || true",
     "start": "tsx server.ts",
     "serve:ts": "tsx server.ts",
     "serve": "tsx server.ts",
