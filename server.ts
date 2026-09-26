@@ -2328,9 +2328,16 @@ app.post('/api/ai/test', async (req: Request, res: Response) => {
 // Dev / Prod Vite Middleware Mount
 async function startServer() {
   const distDir = path.join(__dirname, 'dist');
-  const publicDir = path.join(__dirname, 'public');
+  const distHtml = path.join(distDir, 'index.html');
+  const rootHtml = path.join(__dirname, 'index.html');
 
-  if (!isProduction) {
+  if (isProduction && fs.existsSync(distHtml)) {
+    console.log('Serving production build from dist/');
+    app.use(express.static(distDir));
+    app.get('*', (req, res) => {
+      res.sendFile(distHtml);
+    });
+  } else {
     try {
       const { createServer: createViteServer } = await import('vite');
       const vite = await createViteServer({
@@ -2338,37 +2345,31 @@ async function startServer() {
         appType: 'spa'
       });
       app.use(vite.middlewares);
+
+      // Explicit SPA fallback route to render index.html with Vite transforms
+      app.use('*', async (req, res, next) => {
+        const url = req.originalUrl;
+        if (url.startsWith('/api')) return next();
+        try {
+          if (fs.existsSync(rootHtml)) {
+            let template = fs.readFileSync(rootHtml, 'utf-8');
+            template = await vite.transformIndexHtml(url, template);
+            res.status(200).set({ 'Content-Type': 'text/html' }).end(template);
+          } else if (fs.existsSync(distHtml)) {
+            res.sendFile(distHtml);
+          } else {
+            next();
+          }
+        } catch (e: any) {
+          vite.ssrFixStacktrace?.(e);
+          next(e);
+        }
+      });
     } catch (e) {
-      console.log('Running in static server mode (dev)');
+      console.log('Running in static fallback mode');
       if (fs.existsSync(distDir)) {
         app.use(express.static(distDir));
-        app.get('*', (req, res) => res.sendFile(path.join(distDir, 'index.html')));
-      }
-    }
-  } else {
-    // Production Mode
-    if (fs.existsSync(distDir) && fs.existsSync(path.join(distDir, 'index.html'))) {
-      app.use(express.static(distDir));
-      app.get('*', (req, res) => {
-        res.sendFile(path.join(distDir, 'index.html'));
-      });
-    } else {
-      console.log('Production build dist/ not found, mounting dynamic Vite middleware fallback...');
-      try {
-        const { createServer: createViteServer } = await import('vite');
-        const vite = await createViteServer({
-          server: { middlewareMode: true },
-          appType: 'spa'
-        });
-        app.use(vite.middlewares);
-      } catch (viteErr) {
-        if (fs.existsSync(distDir)) {
-          app.use(express.static(distDir));
-          app.get('*', (req, res) => res.sendFile(path.join(distDir, 'index.html')));
-        } else if (fs.existsSync(publicDir)) {
-          app.use(express.static(publicDir));
-          app.get('*', (req, res) => res.sendFile(path.join(publicDir, 'index.html')));
-        }
+        app.get('*', (req, res) => res.sendFile(distHtml));
       }
     }
   }
