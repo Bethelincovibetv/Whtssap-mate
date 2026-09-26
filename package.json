@@ -6,9 +6,9 @@
   "scripts": {
     "dev": "tsx server.ts",
     "build": "vite build && cp -r dist/* public/",
-    "start": "node server.ts",
+    "start": "tsx server.ts",
     "serve:ts": "tsx server.ts",
-    "serve": "node server.js",
+    "serve": "tsx server.ts",
     "preview": "vite preview",
     "clean": "rm -rf dist session_auth",
     "lint": "tsc --noEmit"

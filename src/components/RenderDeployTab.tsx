@@ -158,7 +158,7 @@ export const RenderDeployTab: React.FC = () => {
           </p>
           <ul className="text-xs text-slate-300 space-y-1.5 list-disc list-inside">
             <li><strong className="text-white">Build Command:</strong> <code className="text-emerald-400 font-mono">npm install && npm run build</code></li>
-            <li><strong className="text-white">Start Command:</strong> <code className="text-emerald-400 font-mono">npm run start</code> (or <code className="text-emerald-400 font-mono">node server.ts</code>)</li>
+            <li><strong className="text-white">Start Command:</strong> <code className="text-emerald-400 font-mono">npm run start</code> (or <code className="text-emerald-400 font-mono">node server.js</code>)</li>
           </ul>
         </div>
 
