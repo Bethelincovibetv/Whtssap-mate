@@ -45,7 +45,7 @@ const TAB_TITLES: Record<NavTabId, { title: string; subtitle: string; icon: any 
   connect: { title: 'Connect Account', subtitle: 'Pair via QR code or 8-digit code', icon: Link2 },
   'api-keys': { title: 'Developer API & Keys', subtitle: 'Connect external apps, websites & webhooks', icon: KeyRound },
   groups: { title: 'Group Manager', subtitle: 'Manage joined WhatsApp groups, tagging & VCF', icon: Users },
-  campaign: { title: 'Campaign Engine', subtitle: 'Automated multi-group message dispatch', icon: Rocket },
+  campaign: { title: 'Campaign Engine', subtitle: 'Automated multi-group & recurring message dispatch', icon: Rocket },
   broadcast: { title: 'Story Broadcast', subtitle: 'Publish status updates to all contacts', icon: Send },
   visibility: { title: 'Story Viewer & Reacts', subtitle: 'Auto-view contact stories & send reactions', icon: Eye },
   logs: { title: 'Audit Logs & Telemetry', subtitle: 'Real-time WebSocket & event stream', icon: Terminal },
@@ -74,122 +74,120 @@ export const Header: React.FC<HeaderProps> = ({
   const isAdmin = isUserAdmin(currentUser);
 
   return (
-    <header className="border-b border-[#202c33] bg-[#111b21]/90 backdrop-blur-md sticky top-0 z-30 px-3 sm:px-6 py-3">
-      <div className="flex items-center justify-between gap-3">
+    <header className="border-b border-[#202c33] bg-[#111b21]/95 backdrop-blur-md sticky top-0 z-30 px-2.5 sm:px-6 py-2.5 sm:py-3 w-full max-w-full overflow-x-hidden">
+      <div className="flex items-center justify-between gap-2 sm:gap-4 max-w-7xl mx-auto w-full min-w-0">
         
-        {/* Left: Sidebar Hamburger Button + Active Tab Info */}
-        <div className="flex items-center gap-3">
+        {/* Left: Mobile-Enhanced Hamburger Button + Active Tab Info */}
+        <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-1">
           <button
             onClick={onOpenSidebar}
-            className="flex items-center justify-center w-10 h-10 rounded-xl bg-[#0b141a] hover:bg-[#1f2c34] text-slate-300 hover:text-white border border-[#202c33] transition-all cursor-pointer relative shadow-sm"
+            className="flex items-center justify-center w-10 h-10 min-w-[40px] rounded-xl bg-[#0b141a] hover:bg-[#1f2c34] active:scale-95 text-slate-200 hover:text-white border border-[#202c33] transition-all cursor-pointer relative shadow-sm shrink-0"
             aria-label="Open sidebar menu"
           >
             <Menu className="w-5 h-5 text-emerald-400" />
             {isConnected && (
-              <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-emerald-400 ring-2 ring-[#0b141a]" />
+              <span className="absolute top-2 right-2 w-2 h-2 rounded-full bg-emerald-400 ring-2 ring-[#0b141a]" />
             )}
           </button>
 
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 hidden xs:flex">
+          <div className="flex items-center gap-2 min-w-0 truncate">
+            <div className="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/20 items-center justify-center text-emerald-400 hidden xs:flex shrink-0">
               <CurrentIcon className="w-4 h-4" />
             </div>
-            <div>
-              <h1 className="text-sm sm:text-base font-bold text-white tracking-tight leading-tight flex items-center gap-2">
-                <span>{currentTab.title}</span>
+            <div className="min-w-0 truncate">
+              <h1 className="text-xs sm:text-sm md:text-base font-bold text-white tracking-tight leading-tight flex items-center gap-1.5 truncate">
+                <span className="truncate">{currentTab.title}</span>
                 {isAdmin && (
-                  <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 font-bold uppercase flex items-center gap-1">
-                    <Crown className="w-3 h-3" /> Admin
+                  <span className="text-[9px] px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 font-bold uppercase shrink-0 hidden sm:inline-flex items-center gap-1">
+                    <Crown className="w-2.5 h-2.5" /> Admin
                   </span>
                 )}
               </h1>
-              <p className="text-[11px] text-slate-400 hidden sm:block truncate max-w-xs md:max-w-md">
+              <p className="text-[11px] text-slate-400 hidden md:block truncate">
                 {currentTab.subtitle}
               </p>
             </div>
           </div>
         </div>
 
-        {/* Right: User Auth, PWA Install, Connection Status, Refresh */}
-        <div className="flex items-center gap-2 sm:gap-3">
+        {/* Right: Actions, Account Switcher, Auth & Refresh */}
+        <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
           
           {/* Multi-Account Switcher (Header Pill) */}
           {statusData?.accounts && statusData.accounts.length > 0 && onSelectAccount && onAddAccount && (
-            <AccountSwitcher
-              accounts={statusData.accounts}
-              activeAccountId={statusData.activeAccountId || statusData.accounts[0]?.id || 'primary'}
-              onSelectAccount={onSelectAccount}
-              onAddAccount={onAddAccount}
-              onDisconnectAccount={onDisconnectAccount || (() => {})}
-              onRemoveAccount={onRemoveAccount || (() => {})}
-            />
+            <div className="shrink-0 max-w-[140px] sm:max-w-none">
+              <AccountSwitcher
+                accounts={statusData.accounts}
+                activeAccountId={statusData.activeAccountId || statusData.accounts[0]?.id || 'primary'}
+                onSelectAccount={onSelectAccount}
+                onAddAccount={onAddAccount}
+                onDisconnectAccount={onDisconnectAccount || (() => {})}
+                onRemoveAccount={onRemoveAccount || (() => {})}
+              />
+            </div>
           )}
 
           {/* Google Auth Status / Login */}
           {!currentUser ? (
             <button
               onClick={onGoogleLogin}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-500 hover:from-emerald-500 hover:to-teal-400 text-white text-xs font-bold transition-all shadow cursor-pointer"
+              className="flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-500 hover:from-emerald-500 hover:to-teal-400 active:scale-95 text-white text-xs font-bold transition-all shadow cursor-pointer shrink-0"
             >
               <LogIn className="w-3.5 h-3.5" />
               <span className="hidden sm:inline">Sign In</span>
             </button>
           ) : (
-            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-[#0b141a] border border-[#202c33]">
+            <div className="flex items-center gap-1.5 px-2 py-1 sm:px-2.5 sm:py-1 rounded-xl bg-[#0b141a] border border-[#202c33] shrink-0">
               {currentUser.photoURL ? (
-                <img src={currentUser.photoURL} alt="Avatar" className="w-5 h-5 rounded-full border border-emerald-500/30" />
+                <img src={currentUser.photoURL} alt="Avatar" className="w-5 h-5 rounded-full border border-emerald-500/30 shrink-0" />
               ) : (
-                <div className="w-5 h-5 rounded-full bg-emerald-600 text-white text-[9px] font-bold flex items-center justify-center">
+                <div className="w-5 h-5 rounded-full bg-emerald-600 text-white text-[9px] font-bold flex items-center justify-center shrink-0">
                   {currentUser.email?.[0].toUpperCase()}
                 </div>
               )}
-              <span className="text-xs text-white font-medium hidden md:inline truncate max-w-[100px]">
+              <span className="text-xs text-white font-medium hidden lg:inline truncate max-w-[90px]">
                 {currentUser.displayName || currentUser.email?.split('@')[0]}
               </span>
             </div>
           )}
 
-          {/* PWA Install Button */}
-          {onInstallClick && (
+          {/* PWA Install Button — ONLY SHOWN IF NOT ALREADY INSTALLED */}
+          {onInstallClick && !isInstalled && (
             <button
               onClick={onInstallClick}
-              className={`flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer shadow-sm ${
-                isInstalled 
-                  ? 'bg-slate-800/80 text-slate-400 border border-slate-700/50' 
-                  : 'bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-400 hover:text-emerald-300 border border-emerald-500/30'
-              }`}
-              title={isInstalled ? 'App already installed on device' : 'Install WhatsApp Engine Mobile App (PWA)'}
+              className="flex items-center gap-1.5 px-2 sm:px-2.5 py-1.5 rounded-xl text-xs font-semibold bg-emerald-500/15 hover:bg-emerald-500/25 active:scale-95 text-emerald-400 hover:text-emerald-300 border border-emerald-500/30 transition-all cursor-pointer shadow-sm shrink-0"
+              title="Install WhatsApp Engine Mobile App (PWA)"
             >
               <Smartphone className="w-3.5 h-3.5" />
-              <span className="hidden md:inline">{isInstalled ? 'Installed' : 'Install App'}</span>
-              {!isInstalled && <Download className="w-3 h-3 md:hidden text-emerald-400" />}
+              <span className="hidden md:inline">Install App</span>
+              <Download className="w-3 h-3 md:hidden text-emerald-400" />
             </button>
           )}
 
-          {/* Connection Status Pill (if no multi-account switcher is shown) */}
+          {/* Single Connection Status Pill (if no multi-account switcher is shown) */}
           {(!statusData?.accounts || statusData.accounts.length === 0) && (
             <div 
               onClick={onOpenSidebar}
-              className="cursor-pointer"
+              className="cursor-pointer shrink-0"
               title="Click to view connection & stats"
             >
               {isConnected ? (
-                <div className="flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-3 py-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-semibold shadow-sm shadow-emerald-950/40">
-                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-                  <span className="hidden sm:inline">Connected</span>
-                  <span className="font-mono text-slate-200 bg-emerald-950/70 px-1.5 py-0.2 rounded text-[11px]">
-                    +{statusData?.phone ? statusData.phone.slice(-6) : 'OK'}
+                <div className="flex items-center gap-1 sm:gap-1.5 px-2 sm:px-2.5 py-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-semibold shadow-sm">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0"></span>
+                  <span className="hidden sm:inline">Online</span>
+                  <span className="font-mono text-slate-200 bg-emerald-950/70 px-1 py-0.2 rounded text-[10px]">
+                    +{statusData?.phone ? statusData.phone.slice(-4) : 'OK'}
                   </span>
                 </div>
               ) : isConnecting ? (
-                <div className="flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-3 py-1.5 rounded-full bg-amber-500/10 border border-amber-500/30 text-amber-400 text-xs font-semibold">
-                  <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping"></span>
-                  <span className="text-[11px] sm:text-xs">Pairing...</span>
+                <div className="flex items-center gap-1 sm:gap-1.5 px-2 sm:px-2.5 py-1.5 rounded-full bg-amber-500/10 border border-amber-500/30 text-amber-400 text-xs font-semibold">
+                  <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping shrink-0"></span>
+                  <span className="text-[10px] sm:text-xs">Pairing...</span>
                 </div>
               ) : (
-                <div className="flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-3 py-1.5 rounded-full bg-rose-500/10 border border-rose-500/30 text-rose-400 text-xs font-semibold">
-                  <span className="w-2 h-2 rounded-full bg-rose-500"></span>
-                  <span className="text-[11px] sm:text-xs">Offline</span>
+                <div className="flex items-center gap-1 sm:gap-1.5 px-2 sm:px-2.5 py-1.5 rounded-full bg-rose-500/10 border border-rose-500/30 text-rose-400 text-xs font-semibold">
+                  <span className="w-2 h-2 rounded-full bg-rose-500 shrink-0"></span>
+                  <span className="text-[10px] sm:text-xs">Offline</span>
                 </div>
               )}
             </div>
@@ -198,7 +196,7 @@ export const Header: React.FC<HeaderProps> = ({
           {/* Quick Refresh Status Button */}
           <button
             onClick={onRefresh}
-            className="p-2 rounded-xl bg-[#0b141a] hover:bg-[#1f2c34] text-slate-400 hover:text-white border border-[#202c33] transition-colors cursor-pointer"
+            className="w-8 h-8 sm:w-9 sm:h-9 flex items-center justify-center rounded-xl bg-[#0b141a] hover:bg-[#1f2c34] active:scale-95 text-slate-400 hover:text-white border border-[#202c33] transition-colors cursor-pointer shrink-0"
             title="Refresh Engine State"
           >
             <RefreshCw className="w-3.5 h-3.5" />

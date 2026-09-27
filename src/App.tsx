@@ -425,15 +425,13 @@ export default function App() {
         {/* Footer */}
         <footer className="border-t border-[#202c33] bg-[#0b141a] py-5 px-4 text-center text-xs text-slate-500">
           <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-3">
-            <p>© 2026 WhatsApp Promoters & Ad Network • Cloud Firebase Firestore Synced</p>
+            <p>© 2026 WhatsApp Promoters & Ad Network • Automated Multi-Group Viral Engine</p>
             <div className="flex items-center gap-3 text-slate-400 text-[11px]">
-              <span className="text-emerald-400">● 24/7 Live Engine</span>
+              <span className="text-emerald-400 font-medium">● 24/7 Auto-Poster Active</span>
               <span>•</span>
-              <span>Firebase Cloud DB</span>
+              <span>Multi-Account Protected</span>
               <span>•</span>
-              <span>Baileys MultiAuth</span>
-              <span>•</span>
-              <span>Port 3000</span>
+              <span>Cloud Synced</span>
             </div>
           </div>
         </footer>

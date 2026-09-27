@@ -99,6 +99,32 @@ export interface VcfExportOptions {
   includeAdminsOnly?: boolean;
 }
 
+export interface ScheduledCampaign {
+  id: string;
+  name: string;
+  targetMode: 'groups' | 'tagged_contacts' | 'all_open_groups';
+  targetGroupJids: string[];
+  targetContactJids?: string[];
+  targetTags: string[];
+  templateText: string;
+  imageUrl?: string;
+  minDelaySec: number;
+  maxDelaySec: number;
+  batchSize: number;
+  batchPauseMinutes: number;
+  repeatEnabled: boolean;
+  repeatIntervalHours: number;
+  maxIterations?: number;
+  currentIteration: number;
+  enabled: boolean;
+  accountId?: string;
+  createdAt: string;
+  lastRunAt?: string | null;
+  nextRunAt: string;
+  lastRunStatus?: 'success' | 'failed' | 'running';
+  lastRunStats?: { sent: number; failed: number };
+}
+
 export interface CampaignProgress {
   id: string;
   status: 'idle' | 'running' | 'paused' | 'batch_pausing' | 'completed' | 'cancelled' | 'error';

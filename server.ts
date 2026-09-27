@@ -12,6 +12,7 @@ import {
   EngineConfig, 
   ActivityLog, 
   CampaignProgress, 
+  ScheduledCampaign,
   ViewedStatusItem, 
   ApiKeyItem, 
   WebhookConfig,
@@ -567,6 +568,58 @@ let currentCampaign: CampaignProgress = {
 
 let campaignIntervalTimer: NodeJS.Timeout | null = null;
 let campaignCountdownTimer: NodeJS.Timeout | null = null;
+let currentScheduledCampaignId: string | null = null;
+
+// Persistent Scheduled Recurring Auto-Campaigns
+const SCHEDULED_CAMPAIGNS_FILE = path.join(__dirname, 'scheduled_campaigns.json');
+let scheduledCampaigns: ScheduledCampaign[] = [];
+
+if (fs.existsSync(SCHEDULED_CAMPAIGNS_FILE)) {
+  try {
+    scheduledCampaigns = JSON.parse(fs.readFileSync(SCHEDULED_CAMPAIGNS_FILE, 'utf-8'));
+  } catch (e) {
+    console.error('Error loading scheduled_campaigns.json:', e);
+  }
+}
+
+function saveScheduledCampaignsToFile() {
+  try {
+    fs.writeFileSync(SCHEDULED_CAMPAIGNS_FILE, JSON.stringify(scheduledCampaigns, null, 2));
+  } catch (e) {
+    console.error('Failed to save scheduled_campaigns.json:', e);
+  }
+}
+
+function handleScheduledCampaignFinished(isSuccess: boolean) {
+  if (!currentScheduledCampaignId) return;
+  const idx = scheduledCampaigns.findIndex(s => s.id === currentScheduledCampaignId);
+  if (idx !== -1) {
+    const sc = scheduledCampaigns[idx];
+    sc.lastRunAt = new Date().toISOString();
+    sc.lastRunStatus = isSuccess ? 'success' : 'failed';
+    sc.lastRunStats = {
+      sent: currentCampaign.sentCount,
+      failed: currentCampaign.failedCount
+    };
+    sc.currentIteration = (sc.currentIteration || 0) + 1;
+
+    if (sc.repeatEnabled) {
+      if (!sc.maxIterations || sc.maxIterations <= 0 || sc.currentIteration < sc.maxIterations) {
+        const intervalMs = Math.max(0.1, sc.repeatIntervalHours || 1) * 3600 * 1000;
+        sc.nextRunAt = new Date(Date.now() + intervalMs).toISOString();
+        addLog(`🔁 Auto-Campaign "${sc.name}": Run #${sc.currentIteration} finished. Next automatic run scheduled at ${new Date(sc.nextRunAt).toLocaleTimeString()}.`, 'info', 'campaign');
+      } else {
+        sc.enabled = false;
+        addLog(`🏁 Auto-Campaign "${sc.name}": Reached maximum repeat iterations (${sc.maxIterations}). Marked as completed.`, 'success', 'campaign');
+      }
+    } else {
+      sc.enabled = false;
+    }
+
+    saveScheduledCampaignsToFile();
+  }
+  currentScheduledCampaignId = null;
+}
 
 function addLog(message: string, type: ActivityLog['type'] = 'info', category: ActivityLog['category'] = 'system', metadata?: any) {
   const logItem: ActivityLog = {
@@ -2667,6 +2720,7 @@ async function runCampaignStep(accountId?: string) {
     currentCampaign.completedAt = new Date().toISOString();
     addLog(`🎉 Campaign completed! Sent to ${currentCampaign.sentCount} recipients (${currentCampaign.failedCount} failed).`, 'success', 'campaign');
     broadcastStateUpdate();
+    handleScheduledCampaignFinished(true);
     return;
   }
 
@@ -2725,6 +2779,7 @@ async function runCampaignStep(accountId?: string) {
     currentCampaign.completedAt = new Date().toISOString();
     addLog(`🎉 Campaign broadcast queue completed successfully!`, 'success', 'campaign');
     broadcastStateUpdate();
+    handleScheduledCampaignFinished(true);
     return;
   }
 
@@ -2816,12 +2871,321 @@ app.post('/api/campaigns/cancel', (req: Request, res: Response) => {
   if (campaignCountdownTimer) clearInterval(campaignCountdownTimer);
   addLog('🛑 Campaign cancelled by user.', 'warn', 'campaign');
   broadcastStateUpdate();
+  handleScheduledCampaignFinished(false);
+  res.json({ success: true, campaign: currentCampaign });
+});
+
+// Delete / Reset Current Campaign Progress (Clears completed or cancelled campaign state)
+app.post('/api/campaigns/delete', (req: Request, res: Response) => {
+  if (currentCampaign.status === 'running' || currentCampaign.status === 'batch_pausing') {
+    return res.status(400).json({ error: 'Cannot delete an actively running campaign. Please cancel it first.' });
+  }
+  if (campaignIntervalTimer) clearTimeout(campaignIntervalTimer);
+  if (campaignCountdownTimer) clearInterval(campaignCountdownTimer);
+  currentScheduledCampaignId = null;
+  currentCampaign = {
+    id: '',
+    status: 'idle',
+    targetGroupJids: [],
+    totalGroups: 0,
+    sentCount: 0,
+    failedCount: 0,
+    currentIndex: 0,
+    currentGroupJid: null,
+    currentGroupName: null,
+    minDelaySec: 15,
+    maxDelaySec: 35,
+    batchSize: 10,
+    batchPauseMinutes: 3,
+    templateText: '',
+    imageUrl: '',
+    nextSendInSec: 0,
+    batchPauseRemainingSec: 0,
+    startedAt: '',
+    completedAt: null,
+    logs: []
+  };
+  addLog('🗑️ Cleared previous campaign history and reset engine state.', 'info', 'campaign');
+  broadcastStateUpdate();
   res.json({ success: true, campaign: currentCampaign });
 });
 
 // Get Campaign Status
 app.get('/api/campaigns/status', (req: Request, res: Response) => {
-  res.json({ campaign: currentCampaign });
+  res.json({ 
+    campaign: currentCampaign,
+    scheduledCampaigns,
+    currentScheduledCampaignId
+  });
+});
+
+// =======================================================
+// SCHEDULED & RECURRING AUTO-CAMPAIGN ENGINE (AUTO-POSTER)
+// =======================================================
+
+async function triggerScheduledCampaign(sc: ScheduledCampaign): Promise<boolean> {
+  if (currentCampaign.status === 'running' || currentCampaign.status === 'batch_pausing') {
+    return false;
+  }
+  const targetAcc = getAccount(sc.accountId || activeAccountId);
+  if (!targetAcc.sock || targetAcc.status !== 'connected') {
+    return false;
+  }
+
+  let resolvedTargetJids: string[] = [];
+  if (sc.targetMode === 'all_open_groups') {
+    try {
+      const groupsData = await targetAcc.sock.groupFetchAllParticipating();
+      resolvedTargetJids = Object.values(groupsData)
+        .filter((g: any) => !g.announce || g.isBotAdmin)
+        .map((g: any) => g.id);
+    } catch (e) {
+      resolvedTargetJids = sc.targetGroupJids || [];
+    }
+  } else if (sc.targetMode === 'tagged_contacts') {
+    if (sc.targetTags && sc.targetTags.length > 0) {
+      const tagged = Array.from(contactsMap.values()).filter(c => 
+        c.tags?.some(t => sc.targetTags.includes(t))
+      );
+      resolvedTargetJids = tagged.map(c => c.jid);
+    } else {
+      resolvedTargetJids = sc.targetContactJids || [];
+    }
+  } else {
+    resolvedTargetJids = sc.targetGroupJids || [];
+  }
+
+  if (resolvedTargetJids.length === 0) {
+    addLog(`⚠️ Auto-Campaign "${sc.name}": No target groups/contacts found for this scheduled run.`, 'warn', 'campaign');
+    return false;
+  }
+
+  if (campaignIntervalTimer) clearTimeout(campaignIntervalTimer);
+  if (campaignCountdownTimer) clearInterval(campaignCountdownTimer);
+
+  currentScheduledCampaignId = sc.id;
+  currentCampaign = {
+    id: 'cmp_auto_' + Date.now(),
+    status: 'running',
+    targetMode: sc.targetMode as any,
+    targetGroupJids: sc.targetMode === 'tagged_contacts' ? [] : resolvedTargetJids,
+    targetContactJids: sc.targetMode === 'tagged_contacts' ? resolvedTargetJids : [],
+    targetTags: sc.targetTags || [],
+    totalGroups: resolvedTargetJids.length,
+    sentCount: 0,
+    failedCount: 0,
+    currentIndex: 0,
+    currentGroupJid: resolvedTargetJids[0],
+    currentGroupName: null,
+    minDelaySec: Math.max(5, sc.minDelaySec || 15),
+    maxDelaySec: Math.max(10, sc.maxDelaySec || 35),
+    batchSize: Math.max(1, sc.batchSize || 10),
+    batchPauseMinutes: Math.max(1, sc.batchPauseMinutes || 3),
+    templateText: sc.templateText,
+    imageUrl: sc.imageUrl || '',
+    nextSendInSec: 0,
+    batchPauseRemainingSec: 0,
+    startedAt: new Date().toISOString(),
+    completedAt: null,
+    logs: []
+  };
+
+  addLog(`🤖 [24/7 Auto-Poster] Auto-posting started for "${sc.name}" across ${resolvedTargetJids.length} targets (Run #${(sc.currentIteration || 0) + 1}, Repeat: every ${sc.repeatIntervalHours}h).`, 'info', 'campaign');
+  broadcastStateUpdate();
+  runCampaignStep(targetAcc.id);
+  return true;
+}
+
+// Background Cron-style Checker for Scheduled Auto-Campaigns
+setInterval(async () => {
+  if (currentCampaign.status === 'running' || currentCampaign.status === 'batch_pausing') {
+    return;
+  }
+  const now = Date.now();
+  for (const sc of scheduledCampaigns) {
+    if (sc.enabled && sc.nextRunAt) {
+      const scheduledTime = new Date(sc.nextRunAt).getTime();
+      if (scheduledTime <= now) {
+        const started = await triggerScheduledCampaign(sc);
+        if (started) break;
+      }
+    }
+  }
+}, 20000);
+
+// 9B. SCHEDULED RECURRING CAMPAIGNS REST APIS
+
+// Get All Scheduled Auto-Campaigns
+app.get('/api/campaigns/scheduled', (req: Request, res: Response) => {
+  res.json({ success: true, campaigns: scheduledCampaigns });
+});
+
+// Create or Update Scheduled Auto-Campaign
+app.post('/api/campaigns/scheduled', async (req: Request, res: Response) => {
+  try {
+    const {
+      id,
+      name,
+      targetMode = 'groups',
+      targetGroupJids = [],
+      targetContactJids = [],
+      targetTags = [],
+      templateText,
+      imageUrl,
+      minDelaySec = 15,
+      maxDelaySec = 35,
+      batchSize = 10,
+      batchPauseMinutes = 3,
+      repeatEnabled = true,
+      repeatIntervalHours = 2,
+      maxIterations,
+      enabled = true,
+      accountId,
+      runImmediately = false
+    } = req.body;
+
+    if (!templateText && !imageUrl) {
+      return res.status(400).json({ error: 'Provide either message text or image URL.' });
+    }
+
+    const campaignId = id || ('sch_' + Date.now().toString(36) + '_' + crypto.randomBytes(3).toString('hex'));
+    const safeInterval = Math.max(0.1, Number(repeatIntervalHours) || 2);
+    const nextRunTime = runImmediately 
+      ? new Date().toISOString()
+      : new Date(Date.now() + safeInterval * 3600 * 1000).toISOString();
+
+    const newScheduledCampaign: ScheduledCampaign = {
+      id: campaignId,
+      name: name?.trim() || `Auto-Post Campaign (${new Date().toLocaleDateString()})`,
+      targetMode: targetMode as any,
+      targetGroupJids: Array.isArray(targetGroupJids) ? targetGroupJids : [],
+      targetContactJids: Array.isArray(targetContactJids) ? targetContactJids : [],
+      targetTags: Array.isArray(targetTags) ? targetTags : [],
+      templateText: templateText || '',
+      imageUrl: imageUrl || '',
+      minDelaySec: Math.max(5, Number(minDelaySec) || 15),
+      maxDelaySec: Math.max(10, Number(maxDelaySec) || 35),
+      batchSize: Math.max(1, Number(batchSize) || 10),
+      batchPauseMinutes: Math.max(1, Number(batchPauseMinutes) || 3),
+      repeatEnabled: Boolean(repeatEnabled),
+      repeatIntervalHours: safeInterval,
+      maxIterations: maxIterations ? Number(maxIterations) : undefined,
+      currentIteration: 0,
+      enabled: Boolean(enabled),
+      accountId: accountId || activeAccountId,
+      createdAt: new Date().toISOString(),
+      lastRunAt: null,
+      nextRunAt: nextRunTime,
+      lastRunStatus: undefined,
+      lastRunStats: undefined
+    };
+
+    const existingIdx = scheduledCampaigns.findIndex(s => s.id === campaignId);
+    if (existingIdx !== -1) {
+      scheduledCampaigns[existingIdx] = {
+        ...scheduledCampaigns[existingIdx],
+        ...newScheduledCampaign,
+        currentIteration: scheduledCampaigns[existingIdx].currentIteration || 0,
+        createdAt: scheduledCampaigns[existingIdx].createdAt || newScheduledCampaign.createdAt
+      };
+    } else {
+      scheduledCampaigns.unshift(newScheduledCampaign);
+    }
+
+    saveScheduledCampaignsToFile();
+    addLog(`⏰ Saved Scheduled Recurring Campaign: "${newScheduledCampaign.name}" (Repeats every ${safeInterval}h)`, 'success', 'campaign');
+    broadcastStateUpdate();
+
+    // If requested to run immediately, trigger now
+    if (runImmediately) {
+      setTimeout(() => {
+        triggerScheduledCampaign(newScheduledCampaign);
+      }, 500);
+    }
+
+    res.json({ success: true, campaign: newScheduledCampaign });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Delete Scheduled Auto-Campaign (Directly fulfills user request to delete campaign)
+app.delete('/api/campaigns/scheduled/:id', (req: Request, res: Response) => {
+  try {
+    const id = req.params.id;
+    const initialLen = scheduledCampaigns.length;
+    const removedCampaign = scheduledCampaigns.find(s => s.id === id);
+    scheduledCampaigns = scheduledCampaigns.filter(s => s.id !== id);
+
+    if (currentScheduledCampaignId === id) {
+      currentScheduledCampaignId = null;
+    }
+
+    saveScheduledCampaignsToFile();
+    addLog(`🗑️ Deleted scheduled campaign: "${removedCampaign?.name || id}"`, 'info', 'campaign');
+    broadcastStateUpdate();
+
+    res.json({
+      success: true,
+      id,
+      deleted: scheduledCampaigns.length < initialLen,
+      message: 'Scheduled campaign deleted successfully. Auto-posting has been stopped.'
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Toggle Scheduled Campaign Active/Pause State
+app.post('/api/campaigns/scheduled/:id/toggle', (req: Request, res: Response) => {
+  try {
+    const id = req.params.id;
+    const sc = scheduledCampaigns.find(s => s.id === id);
+    if (!sc) {
+      return res.status(404).json({ error: 'Scheduled campaign not found.' });
+    }
+
+    sc.enabled = !sc.enabled;
+    if (sc.enabled) {
+      // Refresh next run time if it was in the past
+      if (new Date(sc.nextRunAt).getTime() <= Date.now()) {
+        sc.nextRunAt = new Date(Date.now() + Math.max(0.1, sc.repeatIntervalHours || 1) * 3600 * 1000).toISOString();
+      }
+      addLog(`▶️ Resumed scheduled auto-campaign: "${sc.name}"`, 'info', 'campaign');
+    } else {
+      addLog(`⏸️ Paused scheduled auto-campaign: "${sc.name}"`, 'info', 'campaign');
+    }
+
+    saveScheduledCampaignsToFile();
+    broadcastStateUpdate();
+    res.json({ success: true, campaign: sc });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Run Scheduled Campaign Immediately (Run Now)
+app.post('/api/campaigns/scheduled/:id/run-now', async (req: Request, res: Response) => {
+  try {
+    const id = req.params.id;
+    const sc = scheduledCampaigns.find(s => s.id === id);
+    if (!sc) {
+      return res.status(404).json({ error: 'Scheduled campaign not found.' });
+    }
+
+    if (currentCampaign.status === 'running' || currentCampaign.status === 'batch_pausing') {
+      return res.status(400).json({ error: 'Another campaign is currently running. Please wait for it to finish or cancel it.' });
+    }
+
+    const started = await triggerScheduledCampaign(sc);
+    if (!started) {
+      return res.status(400).json({ error: 'Failed to initiate campaign. Ensure WhatsApp is connected and target groups exist.' });
+    }
+
+    res.json({ success: true, message: `Auto-campaign "${sc.name}" started successfully!`, campaign: sc });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // 10. Update Configuration

@@ -33,7 +33,11 @@ import {
   Clock4,
   Percent,
   TrendingUp,
-  BarChart2
+  BarChart2,
+  Repeat,
+  Calendar,
+  Zap,
+  Power
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -51,6 +55,7 @@ import {
   EngineStatusResponse, 
   GroupItem, 
   CampaignProgress,
+  ScheduledCampaign,
   TagDefinition,
   ContactItem 
 } from '../types';
@@ -107,6 +112,18 @@ export const CampaignTab: React.FC<CampaignTabProps> = ({
   const [startingCampaign, setStartingCampaign] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  // 24/7 Automated Recurring Campaign Settings
+  const [activeViewTab, setActiveViewTab] = useState<'composer' | 'scheduled'>('composer');
+  const [campaignName, setCampaignName] = useState('24/7 Auto Promo');
+  const [repeatEnabled, setRepeatEnabled] = useState(true);
+  const [repeatIntervalHours, setRepeatIntervalHours] = useState(2);
+  const [maxIterations, setMaxIterations] = useState(0); // 0 = infinite
+  const [scheduledCampaigns, setScheduledCampaigns] = useState<ScheduledCampaign[]>([]);
+  const [loadingScheduled, setLoadingScheduled] = useState(false);
+  const [savingScheduled, setSavingScheduled] = useState(false);
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const [successToast, setSuccessToast] = useState<string | null>(null);
 
   // Apply Preload Options from Group Manager if passed
   useEffect(() => {
@@ -334,6 +351,154 @@ export const CampaignTab: React.FC<CampaignTabProps> = ({
       console.error(`Error on campaign ${action}:`, err);
     } finally {
       setActionLoading(false);
+    }
+  };
+
+  const fetchScheduledCampaigns = useCallback(async () => {
+    setLoadingScheduled(true);
+    try {
+      const res = await fetch('/api/campaigns/scheduled');
+      const data = await res.json();
+      if (data.campaigns) {
+        setScheduledCampaigns(data.campaigns);
+      }
+    } catch (e) {
+      console.error('Failed to load scheduled campaigns:', e);
+    } finally {
+      setLoadingScheduled(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchScheduledCampaigns();
+    const timer = setInterval(fetchScheduledCampaigns, 15000);
+    return () => clearInterval(timer);
+  }, [fetchScheduledCampaigns]);
+
+  // Activate / Save 24/7 Automated Recurring Campaign
+  const handleScheduleAutoCampaign = async (runNow: boolean = false) => {
+    if (campaignMode === 'groups' && selectedGroupJids.length === 0) {
+      setErrorMsg('Please select at least 1 WhatsApp group for automated posting.');
+      return;
+    }
+    if (campaignMode === 'tagged_contacts' && selectedTags.length === 0) {
+      setErrorMsg('Please select at least 1 category tag for targeted auto-posting.');
+      return;
+    }
+    if (!templateText && !imageUrl) {
+      setErrorMsg('Please enter message text or attach an image.');
+      return;
+    }
+
+    setErrorMsg(null);
+    setSavingScheduled(true);
+    try {
+      const payload = {
+        name: campaignName.trim() || `Auto-Post (${selectedGroupJids.length} Groups)`,
+        targetMode: campaignMode,
+        targetGroupJids: campaignMode === 'groups' ? selectedGroupJids : [],
+        targetTags: campaignMode === 'tagged_contacts' ? selectedTags : [],
+        templateText,
+        imageUrl,
+        minDelaySec,
+        maxDelaySec,
+        batchSize,
+        batchPauseMinutes,
+        repeatEnabled,
+        repeatIntervalHours: Number(repeatIntervalHours) || 2,
+        maxIterations: maxIterations > 0 ? maxIterations : undefined,
+        enabled: true,
+        runImmediately: runNow
+      };
+
+      const res = await fetch('/api/campaigns/scheduled', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setSuccessToast(`Auto-Campaign "${data.campaign.name}" created! Auto-posts every ${data.campaign.repeatIntervalHours}h.`);
+        setTimeout(() => setSuccessToast(null), 4000);
+        await fetchScheduledCampaigns();
+        setActiveViewTab('scheduled');
+        onRefresh();
+      } else {
+        setErrorMsg(data.error || 'Failed to save auto-campaign.');
+      }
+    } catch (err: any) {
+      setErrorMsg(err.message || 'Error saving scheduled campaign.');
+    } finally {
+      setSavingScheduled(false);
+    }
+  };
+
+  // Delete Scheduled Auto-Campaign (Fulfills user request: "usdr can delet a campagne, so the systwm aupost post in grouls for your")
+  const handleDeleteScheduledCampaign = async (id: string) => {
+    try {
+      const res = await fetch(`/api/campaigns/scheduled/${id}`, {
+        method: 'DELETE'
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setScheduledCampaigns(prev => prev.filter(c => c.id !== id));
+        setSuccessToast('Campaign deleted successfully! Automated posting stopped.');
+        setTimeout(() => setSuccessToast(null), 3500);
+        setDeleteConfirmId(null);
+        onRefresh();
+      } else {
+        setErrorMsg(data.error || 'Failed to delete campaign.');
+      }
+    } catch (e: any) {
+      setErrorMsg(e.message || 'Failed to delete campaign.');
+    }
+  };
+
+  // Toggle active / paused for a scheduled campaign
+  const handleToggleScheduledCampaign = async (id: string) => {
+    try {
+      const res = await fetch(`/api/campaigns/scheduled/${id}/toggle`, {
+        method: 'POST'
+      });
+      const data = await res.json();
+      if (data.campaign) {
+        setScheduledCampaigns(prev => prev.map(c => c.id === id ? data.campaign : c));
+      }
+      onRefresh();
+    } catch (e) {
+      console.error('Error toggling campaign:', e);
+    }
+  };
+
+  // Run scheduled campaign now
+  const handleRunScheduledNow = async (id: string) => {
+    try {
+      const res = await fetch(`/api/campaigns/scheduled/${id}/run-now`, {
+        method: 'POST'
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setSuccessToast(data.message || 'Auto-campaign launched!');
+        setTimeout(() => setSuccessToast(null), 3000);
+        onRefresh();
+      } else {
+        setErrorMsg(data.error || 'Failed to start campaign.');
+      }
+    } catch (e: any) {
+      setErrorMsg(e.message || 'Error starting campaign.');
+    }
+  };
+
+  // Clear / Delete Completed or Cancelled Campaign State
+  const handleClearCampaign = async () => {
+    try {
+      const res = await fetch('/api/campaigns/delete', { method: 'POST' });
+      if (res.ok) {
+        setCampaign(null);
+        onRefresh();
+      }
+    } catch (e) {
+      console.error('Error clearing campaign history:', e);
     }
   };
 
@@ -691,456 +856,784 @@ export const CampaignTab: React.FC<CampaignTabProps> = ({
         </div>
       )}
 
-      {/* Campaign Mode Selection Tabs */}
-      <div className="p-1.5 rounded-2xl bg-[#111b21] border border-[#202c33] flex flex-col sm:flex-row items-center gap-2">
+      {/* Success Toast */}
+      {successToast && (
+        <div className="p-3.5 rounded-xl bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-xs sm:text-sm font-semibold flex items-center justify-between shadow-lg animate-fade-in">
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+            <span>{successToast}</span>
+          </div>
+          <button onClick={() => setSuccessToast(null)} className="text-slate-400 hover:text-white text-xs">✕</button>
+        </div>
+      )}
+
+      {/* Completed / Cancelled / Error Campaign Banner with Clear / Delete Option */}
+      {campaign && (campaign.status === 'completed' || campaign.status === 'cancelled' || campaign.status === 'error') && (
+        <div className="p-4 rounded-2xl bg-[#111b21] border border-[#202c33] flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-lg">
+          <div className="flex items-center gap-3">
+            <div className={`w-8 h-8 rounded-xl flex items-center justify-center ${
+              campaign.status === 'completed' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-slate-800 text-slate-400'
+            }`}>
+              {campaign.status === 'completed' ? <CheckCircle2 className="w-4 h-4" /> : <Square className="w-4 h-4" />}
+            </div>
+            <div>
+              <p className="text-xs sm:text-sm font-bold text-white">
+                {campaign.status === 'completed' ? 'Previous Broadcast Queue Completed' : 'Previous Broadcast Stopped'}
+              </p>
+              <p className="text-[11px] text-slate-400">
+                Delivered to {campaign.sentCount} of {campaign.totalGroups} recipients • {campaign.failedCount} dropped
+              </p>
+            </div>
+          </div>
+
+          <button
+            onClick={handleClearCampaign}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/30 text-xs font-semibold transition-all cursor-pointer"
+            title="Clear and reset engine history"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+            <span>Clear / Reset History</span>
+          </button>
+        </div>
+      )}
+
+      {/* Main Feature SubTabs (Builder vs Scheduled Auto-Poster) */}
+      <div className="flex items-center gap-2 p-1.5 rounded-2xl bg-[#111b21] border border-[#202c33]">
         <button
-          onClick={() => setCampaignMode('groups')}
-          className={`w-full sm:flex-1 flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl text-xs md:text-sm font-semibold transition-all cursor-pointer ${
-            campaignMode === 'groups'
-              ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-lg'
-              : 'text-slate-400 hover:text-white hover:bg-[#202c33]'
+          onClick={() => setActiveViewTab('composer')}
+          className={`flex-1 flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl text-xs sm:text-sm font-bold transition-all cursor-pointer ${
+            activeViewTab === 'composer'
+              ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow'
+              : 'text-slate-400 hover:text-white hover:bg-[#0b141a]'
           }`}
         >
-          <Users className="w-4 h-4" />
-          <span>Multi-Group Broadcast ({selectedGroupJids.length} Selected)</span>
+          <Rocket className="w-4 h-4" />
+          <span>Campaign Composer & Auto-Poster</span>
         </button>
 
         <button
-          onClick={() => setCampaignMode('tagged_contacts')}
-          className={`w-full sm:flex-1 flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl text-xs md:text-sm font-semibold transition-all cursor-pointer ${
-            campaignMode === 'tagged_contacts'
-              ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-lg'
-              : 'text-slate-400 hover:text-white hover:bg-[#202c33]'
+          onClick={() => setActiveViewTab('scheduled')}
+          className={`flex-1 flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl text-xs sm:text-sm font-bold transition-all cursor-pointer ${
+            activeViewTab === 'scheduled'
+              ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow'
+              : 'text-slate-400 hover:text-white hover:bg-[#0b141a]'
           }`}
         >
-          <Tags className="w-4 h-4" />
-          <span>Tag-Targeted Broadcast ({matchedTaggedContacts.length} Matched)</span>
+          <Repeat className="w-4 h-4 text-emerald-400" />
+          <span>24/7 Auto-Campaigns</span>
+          {scheduledCampaigns.length > 0 && (
+            <span className="px-1.5 py-0.2 rounded-full text-[10px] font-mono bg-emerald-950 text-emerald-300 border border-emerald-500/40">
+              {scheduledCampaigns.filter(s => s.enabled).length}/{scheduledCampaigns.length}
+            </span>
+          )}
         </button>
       </div>
 
-      {/* Main Campaign Builder Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        
-        {/* Left Column: Target Selector (Groups vs Tags) */}
-        <div className="lg:col-span-5 p-4 sm:p-5 rounded-2xl bg-[#111b21] border border-[#202c33] flex flex-col space-y-4 shadow-xl">
-          
-          {/* MODE A: GROUPS SELECTOR */}
-          {campaignMode === 'groups' && (
-            <>
-              <div className="flex items-center justify-between">
-                <h4 className="font-bold text-white text-xs sm:text-sm flex items-center gap-2">
-                  <Users className="w-4 h-4 text-emerald-400" />
-                  1. Select Target Groups ({selectedGroupJids.length})
-                </h4>
-                <button
-                  onClick={fetchGroups}
-                  className="p-1.5 rounded-lg bg-[#0b141a] hover:bg-[#202c33] text-slate-400 hover:text-emerald-400 transition-all cursor-pointer"
-                  title="Refresh groups list"
-                >
-                  <RefreshCw className={`w-3.5 h-3.5 ${loadingGroups ? 'animate-spin text-emerald-400' : ''}`} />
-                </button>
-              </div>
-
-              {/* Quick Select Buttons */}
-              <div className="flex flex-wrap items-center gap-1.5">
-                <button
-                  onClick={handleSelectAllOpenGroups}
-                  className="px-2.5 py-1.5 rounded-xl bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 text-[11px] font-bold text-emerald-300 transition-all cursor-pointer"
-                >
-                  ⚡ All Open Groups ({groups.filter(g => !g.announce || g.isBotAdmin).length})
-                </button>
-
-                <button
-                  onClick={handleSelectAllGroups}
-                  className="px-2.5 py-1.5 rounded-xl bg-[#0b141a] hover:bg-[#202c33] border border-[#202c33] text-[11px] font-semibold text-slate-300 transition-all cursor-pointer"
-                >
-                  {selectedGroupJids.length === filteredGroups.length && filteredGroups.length > 0 ? 'Deselect All' : 'Select All'}
-                </button>
-              </div>
-
-              <input
-                type="text"
-                value={searchGroup}
-                onChange={(e) => setSearchGroup(e.target.value)}
-                placeholder="Search groups..."
-                className="w-full bg-[#0b141a] border border-[#202c33] rounded-xl px-3 py-2 text-xs text-white placeholder-slate-600 outline-none focus:border-emerald-500"
-              />
-
-              {/* Group Checklist */}
-              <div className="flex-1 max-h-96 overflow-y-auto space-y-1.5 pr-1 scrollbar-thin">
-                {loadingGroups && groups.length === 0 ? (
-                  <div className="py-12 text-center text-slate-500 text-xs">
-                    <RefreshCw className="w-5 h-5 animate-spin mx-auto mb-2 text-emerald-500" />
-                    Loading WhatsApp groups...
-                  </div>
-                ) : filteredGroups.length === 0 ? (
-                  <div className="py-12 text-center text-slate-500 text-xs">
-                    No groups found.
-                  </div>
-                ) : (
-                  filteredGroups.map(group => {
-                    const isSelected = selectedGroupJids.includes(group.id);
-                    return (
-                      <div
-                        key={group.id}
-                        onClick={() => toggleGroupSelection(group.id)}
-                        className={`p-2.5 rounded-xl border flex items-center justify-between gap-3 cursor-pointer transition-all ${
-                          isSelected
-                            ? 'bg-emerald-500/10 border-emerald-500/40 text-white shadow'
-                            : 'bg-[#0b141a] border-[#202c33] text-slate-300 hover:border-slate-700'
-                        }`}
-                      >
-                        <div className="flex items-center gap-2.5 truncate min-w-0">
-                          <div className={`w-4 h-4 rounded flex items-center justify-center border shrink-0 transition-all ${
-                            isSelected ? 'bg-emerald-500 border-emerald-500 text-white' : 'border-slate-600'
-                          }`}>
-                            {isSelected && <Check className="w-3 h-3 stroke-[3]" />}
-                          </div>
-                          <div className="truncate">
-                            <p className="text-xs font-semibold truncate">{group.subject}</p>
-                            <p className="text-[10px] text-slate-500 font-mono truncate">{group.id.split('@')[0]}</p>
-                          </div>
-                        </div>
-
-                        <div className="flex items-center gap-1.5 shrink-0">
-                          {group.announce && !group.isBotAdmin ? (
-                            <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400">
-                              Admin Only
-                            </span>
-                          ) : (
-                            <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400">
-                              Open
-                            </span>
-                          )}
-                          <span className="text-[10px] text-slate-400">
-                            {group.size || group.participantsCount || 0}
-                          </span>
-                        </div>
-                      </div>
-                    );
-                  })
-                )}
-              </div>
-            </>
-          )}
-
-          {/* MODE B: TAGGED CONTACTS SELECTOR */}
-          {campaignMode === 'tagged_contacts' && (
-            <>
-              <div className="flex items-center justify-between">
-                <h4 className="font-bold text-white text-xs sm:text-sm flex items-center gap-2">
-                  <Tags className="w-4 h-4 text-emerald-400" />
-                  1. Target Categories ({selectedTags.length} Selected)
-                </h4>
-                <button
-                  onClick={fetchTagsAndContacts}
-                  className="p-1.5 rounded-lg bg-[#0b141a] hover:bg-[#202c33] text-slate-400 hover:text-emerald-400 transition-all cursor-pointer"
-                  title="Refresh tags"
-                >
-                  <RefreshCw className={`w-3.5 h-3.5 ${loadingTagsAndContacts ? 'animate-spin text-emerald-400' : ''}`} />
-                </button>
-              </div>
-
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold text-emerald-400">
-                  Audience: {matchedTaggedContacts.length} Contacts
-                </span>
-                <button
-                  onClick={handleSelectAllTags}
-                  className="px-2.5 py-1 rounded-xl bg-[#0b141a] hover:bg-[#202c33] border border-[#202c33] text-[11px] font-semibold text-slate-300 transition-all cursor-pointer"
-                >
-                  {selectedTags.length === tags.length && tags.length > 0 ? 'Deselect All' : 'Select All Tags'}
-                </button>
-              </div>
-
-              {/* Tag Selector Cards */}
-              <div className="space-y-2 max-h-96 overflow-y-auto pr-1 scrollbar-thin">
-                {tags.map(tag => {
-                  const isSelected = selectedTags.includes(tag.id);
-                  const count = contacts.filter(c => c.tags?.includes(tag.id)).length;
-                  return (
-                    <div
-                      key={tag.id}
-                      onClick={() => toggleTagSelection(tag.id)}
-                      className={`p-3 rounded-xl border flex items-center justify-between gap-3 cursor-pointer transition-all ${
-                        isSelected
-                          ? 'border-white/40 shadow-lg'
-                          : 'bg-[#0b141a] border-[#202c33] text-slate-300 hover:border-slate-700'
-                      }`}
-                      style={{
-                        backgroundColor: isSelected ? `${tag.color}22` : undefined,
-                        borderColor: isSelected ? tag.color : undefined
-                      }}
-                    >
-                      <div className="flex items-center gap-3 truncate min-w-0">
-                        <div className={`w-4 h-4 rounded flex items-center justify-center border shrink-0 transition-all ${
-                          isSelected ? 'text-white' : 'border-slate-600'
-                        }`}
-                        style={{ backgroundColor: isSelected ? tag.color : undefined, borderColor: isSelected ? tag.color : undefined }}
-                        >
-                          {isSelected && <Check className="w-3 h-3 stroke-[3]" />}
-                        </div>
-                        <div className="truncate">
-                          <div className="flex items-center gap-2">
-                            <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: tag.color }} />
-                            <p className="text-xs font-bold text-white truncate">{tag.name}</p>
-                          </div>
-                          {tag.description && (
-                            <p className="text-[10px] text-slate-400 mt-0.5 truncate">{tag.description}</p>
-                          )}
-                        </div>
-                      </div>
-
-                      <div className="text-right shrink-0">
-                        <span className="text-xs font-bold text-white font-mono">{count}</span>
-                        <span className="text-[10px] text-slate-500 block">contacts</span>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </>
-          )}
-
-        </div>
-
-        {/* Right Column: Template, Image Attachment & Anti-Ban Config */}
-        <div className="lg:col-span-7 space-y-4">
-          
-          {/* Spintax Message Composer */}
-          <div className="p-4 sm:p-5 rounded-2xl bg-[#111b21] border border-[#202c33] space-y-4 shadow-xl">
-            <div className="flex items-center justify-between flex-wrap gap-2">
-              <h4 className="font-bold text-white text-xs sm:text-sm flex items-center gap-2">
-                <Shuffle className="w-4 h-4 text-emerald-400" />
-                2. Spintax Message Composer
-              </h4>
-              <button
-                onClick={generateSpintaxPreview}
-                disabled={loadingSpintax}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#0b141a] hover:bg-[#202c33] border border-[#202c33] text-xs font-semibold text-emerald-400 transition-all cursor-pointer"
-              >
-                <Sparkles className="w-3.5 h-3.5" />
-                Preview Variations
-              </button>
-            </div>
-
-            {/* Variables Bar */}
-            {campaignMode === 'tagged_contacts' && (
-              <div className="flex flex-wrap items-center gap-1.5 bg-[#0b141a] p-2.5 rounded-xl border border-[#202c33]">
-                <span className="text-[10px] font-bold text-slate-400 uppercase mr-1">Variables:</span>
-                {['{name}', '{first_name}', '{phone}', '{tag}'].map(v => (
-                  <button
-                    key={v}
-                    type="button"
-                    onClick={() => insertVariable(v)}
-                    className="px-2 py-1 rounded-lg bg-[#111b21] hover:bg-emerald-600/30 text-emerald-400 text-[11px] font-mono border border-emerald-500/20 transition-all cursor-pointer"
-                  >
-                    {v}
-                  </button>
-                ))}
-              </div>
-            )}
-
-            <textarea
-              value={templateText}
-              onChange={(e) => setTemplateText(e.target.value)}
-              rows={5}
-              placeholder="Type message using Spintax syntax like {Hello|Hi|Hey} {name|friend}..."
-              className="w-full bg-[#0b141a] border border-[#202c33] focus:border-emerald-500 rounded-xl p-3 text-xs md:text-sm text-white placeholder-slate-600 outline-none font-mono leading-relaxed resize-none"
-            />
-
-            {/* Direct Image File Upload Section */}
-            <div className="p-3.5 rounded-2xl bg-[#0b141a] border border-[#202c33] space-y-3">
-              <div className="flex items-center justify-between flex-wrap gap-1">
-                <label className="text-xs font-bold text-white flex items-center gap-1.5">
-                  <ImageIcon className="w-4 h-4 text-emerald-400" />
-                  Attach Campaign Image (Upload or URL)
-                </label>
-                <span className="text-[10px] text-slate-400">PNG, JPG, WebP</span>
-              </div>
-
-              <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3">
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept="image/*"
-                  onChange={handleImageUpload}
-                  className="hidden"
-                  id="campaign-image-upload"
-                />
-
-                <label
-                  htmlFor="campaign-image-upload"
-                  className="flex items-center gap-2 px-4 py-2 rounded-xl bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/40 text-xs font-semibold cursor-pointer transition-all w-full sm:w-auto justify-center"
-                >
-                  <Upload className="w-3.5 h-3.5" />
-                  <span>{imageUrl ? 'Change Image File' : 'Upload Image File'}</span>
-                </label>
-
-                {imageUrl && (
-                  <button
-                    type="button"
-                    onClick={handleClearImage}
-                    className="flex items-center gap-1 px-3 py-2 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20 text-xs font-medium cursor-pointer transition-all"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                    <span>Remove</span>
-                  </button>
-                )}
-              </div>
-
-              {/* URL Fallback */}
-              <input
-                type="url"
-                value={imageUrl.startsWith('data:') ? '' : imageUrl}
-                onChange={(e) => setImageUrl(e.target.value)}
-                placeholder="Or enter image URL: https://example.com/banner.jpg"
-                className="w-full bg-[#111b21] border border-[#202c33] focus:border-emerald-500 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-600 outline-none"
-              />
-
-              {/* Image Preview Box */}
-              {imageUrl && (
-                <div className="relative rounded-xl overflow-hidden border border-emerald-500/40 bg-black/40 p-2 flex items-center gap-3">
-                  <img
-                    src={imageUrl}
-                    alt="Preview"
-                    className="w-16 h-16 object-cover rounded-lg border border-[#202c33]"
-                  />
-                  <div className="text-xs space-y-0.5 truncate">
-                    <p className="font-semibold text-emerald-300 truncate">
-                      {imageFileName || 'Campaign Banner Image Attached'}
-                    </p>
-                    <p className="text-[10px] text-slate-400">Sent with caption to all recipients</p>
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* Spintax Samples Preview Box */}
-            {spintaxSamples.length > 0 && (
-              <div className="p-3 rounded-xl bg-[#0b141a] border border-emerald-500/20 space-y-2">
-                <p className="text-[10px] font-bold text-emerald-400 uppercase tracking-wider">Live Spintax Variations:</p>
-                {spintaxSamples.map((sample, idx) => (
-                  <div key={idx} className="p-2 rounded-lg bg-[#111b21] border border-[#202c33] text-xs text-slate-200 font-mono whitespace-pre-wrap">
-                    <span className="text-slate-500 text-[10px] mr-2">#{idx + 1}</span>
-                    {sample}
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {/* Anti-Ban Pacing Controls */}
-          <div className="p-4 sm:p-5 rounded-2xl bg-[#111b21] border border-[#202c33] space-y-4 shadow-xl">
-            <h4 className="font-bold text-white text-xs sm:text-sm flex items-center gap-2">
-              <ShieldCheck className="w-4 h-4 text-emerald-400" />
-              3. Anti-Ban Random Pacing & Safeguards
-            </h4>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div className="p-3 rounded-xl bg-[#0b141a] border border-[#202c33] space-y-2">
-                <div className="flex items-center justify-between text-xs font-semibold text-slate-300">
-                  <span>Random Jitter Interval</span>
-                  <span className="text-emerald-400 font-mono">{minDelaySec}s – {maxDelaySec}s</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-[9px] text-slate-500">5s</span>
-                  <input
-                    type="range"
-                    min="5"
-                    max="60"
-                    value={minDelaySec}
-                    onChange={(e) => {
-                      const val = Number(e.target.value);
-                      setMinDelaySec(val);
-                      if (val > maxDelaySec) setMaxDelaySec(val + 5);
-                    }}
-                    className="flex-1 accent-emerald-500 cursor-pointer"
-                  />
-                  <input
-                    type="range"
-                    min="10"
-                    max="90"
-                    value={maxDelaySec}
-                    onChange={(e) => {
-                      const val = Number(e.target.value);
-                      setMaxDelaySec(val);
-                      if (val < minDelaySec) setMinDelaySec(val - 5);
-                    }}
-                    className="flex-1 accent-emerald-500 cursor-pointer"
-                  />
-                  <span className="text-[9px] text-slate-500">90s</span>
-                </div>
-              </div>
-
-              <div className="p-3 rounded-xl bg-[#0b141a] border border-[#202c33] space-y-2">
-                <div className="flex items-center justify-between text-xs font-semibold text-slate-300">
-                  <span>Batch Rest Pause</span>
-                  <span className="text-emerald-400 font-mono">{batchPauseMinutes}m rest / {batchSize} sends</span>
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                  <select
-                    value={batchSize}
-                    onChange={(e) => setBatchSize(Number(e.target.value))}
-                    className="bg-[#111b21] border border-[#202c33] rounded-lg px-2 py-1 text-xs text-white outline-none"
-                  >
-                    <option value={5}>Every 5 sends</option>
-                    <option value={10}>Every 10 sends</option>
-                    <option value={15}>Every 15 sends</option>
-                    <option value={20}>Every 20 sends</option>
-                  </select>
-                  <select
-                    value={batchPauseMinutes}
-                    onChange={(e) => setBatchPauseMinutes(Number(e.target.value))}
-                    className="bg-[#111b21] border border-[#202c33] rounded-lg px-2 py-1 text-xs text-white outline-none"
-                  >
-                    <option value={1}>1 Min Rest</option>
-                    <option value={2}>2 Min Rest</option>
-                    <option value={3}>3 Min Rest</option>
-                    <option value={5}>5 Min Rest</option>
-                  </select>
-                </div>
-              </div>
-            </div>
-
-            {errorMsg && (
-              <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-400 text-xs flex items-center gap-2">
-                <AlertTriangle className="w-4 h-4 shrink-0" />
-                <span>{errorMsg}</span>
-              </div>
-            )}
-
-            {/* Launch Action */}
+      {/* SUBTAB 1: COMPOSER & LAUNCHER */}
+      {activeViewTab === 'composer' && (
+        <>
+          {/* Campaign Target Mode Selection */}
+          <div className="p-1.5 rounded-2xl bg-[#111b21] border border-[#202c33] flex flex-col sm:flex-row items-center gap-2">
             <button
-              onClick={handleStartCampaign}
-              disabled={
-                startingCampaign || 
-                isCampaignActive || 
-                (campaignMode === 'groups' && selectedGroupJids.length === 0) ||
-                (campaignMode === 'tagged_contacts' && selectedTags.length === 0)
-              }
-              className="w-full py-3.5 px-6 rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-500 hover:from-emerald-500 hover:to-teal-400 text-white font-bold text-xs sm:text-sm transition-all shadow-xl disabled:opacity-40 flex items-center justify-center gap-2 cursor-pointer"
+              onClick={() => setCampaignMode('groups')}
+              className={`w-full sm:flex-1 flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl text-xs md:text-sm font-semibold transition-all cursor-pointer ${
+                campaignMode === 'groups'
+                  ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-lg'
+                  : 'text-slate-400 hover:text-white hover:bg-[#202c33]'
+              }`}
             >
-              {startingCampaign ? (
-                <>
-                  <RefreshCw className="w-4 h-4 animate-spin" />
-                  <span>Initiating Automated Broadcast Campaign...</span>
-                </>
-              ) : (
-                <>
-                  <Rocket className="w-4 h-4" />
-                  <span>
-                    Launch {campaignMode === 'tagged_contacts' ? `Tag-Targeted Broadcast (${matchedTaggedContacts.length} Contacts)` : `Multi-Group Campaign (${selectedGroupJids.length} Groups)`}
-                  </span>
-                </>
-              )}
+              <Users className="w-4 h-4" />
+              <span>Multi-Group Broadcast ({selectedGroupJids.length} Selected)</span>
             </button>
 
+            <button
+              onClick={() => setCampaignMode('tagged_contacts')}
+              className={`w-full sm:flex-1 flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl text-xs md:text-sm font-semibold transition-all cursor-pointer ${
+                campaignMode === 'tagged_contacts'
+                  ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-lg'
+                  : 'text-slate-400 hover:text-white hover:bg-[#202c33]'
+              }`}
+            >
+              <Tags className="w-4 h-4" />
+              <span>Tag-Targeted Broadcast ({matchedTaggedContacts.length} Matched)</span>
+            </button>
           </div>
 
-        </div>
+          {/* Main Campaign Builder Grid */}
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+            
+            {/* Left Column: Target Selector (Groups vs Tags) */}
+            <div className="lg:col-span-5 p-4 sm:p-5 rounded-2xl bg-[#111b21] border border-[#202c33] flex flex-col space-y-4 shadow-xl">
+              
+              {/* MODE A: GROUPS SELECTOR */}
+              {campaignMode === 'groups' && (
+                <>
+                  <div className="flex items-center justify-between">
+                    <h4 className="font-bold text-white text-xs sm:text-sm flex items-center gap-2">
+                      <Users className="w-4 h-4 text-emerald-400" />
+                      1. Select Target Groups ({selectedGroupJids.length})
+                    </h4>
+                    <button
+                      onClick={fetchGroups}
+                      className="p-1.5 rounded-lg bg-[#0b141a] hover:bg-[#202c33] text-slate-400 hover:text-emerald-400 transition-all cursor-pointer"
+                      title="Refresh groups list"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${loadingGroups ? 'animate-spin text-emerald-400' : ''}`} />
+                    </button>
+                  </div>
 
-      </div>
+                  {/* Quick Select Buttons */}
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <button
+                      onClick={handleSelectAllOpenGroups}
+                      className="px-2.5 py-1.5 rounded-xl bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 text-[11px] font-bold text-emerald-300 transition-all cursor-pointer"
+                    >
+                      ⚡ All Open Groups ({groups.filter(g => !g.announce || g.isBotAdmin).length})
+                    </button>
+
+                    <button
+                      onClick={handleSelectAllGroups}
+                      className="px-2.5 py-1.5 rounded-xl bg-[#0b141a] hover:bg-[#202c33] border border-[#202c33] text-[11px] font-semibold text-slate-300 transition-all cursor-pointer"
+                    >
+                      {selectedGroupJids.length === filteredGroups.length && filteredGroups.length > 0 ? 'Deselect All' : 'Select All'}
+                    </button>
+                  </div>
+
+                  <input
+                    type="text"
+                    value={searchGroup}
+                    onChange={(e) => setSearchGroup(e.target.value)}
+                    placeholder="Search groups..."
+                    className="w-full bg-[#0b141a] border border-[#202c33] rounded-xl px-3 py-2 text-xs text-white placeholder-slate-600 outline-none focus:border-emerald-500"
+                  />
+
+                  {/* Group Checklist */}
+                  <div className="flex-1 max-h-96 overflow-y-auto space-y-1.5 pr-1 scrollbar-thin">
+                    {loadingGroups && groups.length === 0 ? (
+                      <div className="py-12 text-center text-slate-500 text-xs">
+                        <RefreshCw className="w-5 h-5 animate-spin mx-auto mb-2 text-emerald-500" />
+                        Loading WhatsApp groups...
+                      </div>
+                    ) : filteredGroups.length === 0 ? (
+                      <div className="py-12 text-center text-slate-500 text-xs">
+                        No groups found.
+                      </div>
+                    ) : (
+                      filteredGroups.map(group => {
+                        const isSelected = selectedGroupJids.includes(group.id);
+                        return (
+                          <div
+                            key={group.id}
+                            onClick={() => toggleGroupSelection(group.id)}
+                            className={`p-2.5 rounded-xl border flex items-center justify-between gap-3 cursor-pointer transition-all ${
+                              isSelected
+                                ? 'bg-emerald-500/10 border-emerald-500/40 text-white shadow'
+                                : 'bg-[#0b141a] border-[#202c33] text-slate-300 hover:border-slate-700'
+                            }`}
+                          >
+                            <div className="flex items-center gap-2.5 truncate min-w-0">
+                              <div className={`w-4 h-4 rounded flex items-center justify-center border shrink-0 transition-all ${
+                                isSelected ? 'bg-emerald-500 border-emerald-500 text-white' : 'border-slate-600'
+                              }`}>
+                                {isSelected && <Check className="w-3 h-3 stroke-[3]" />}
+                              </div>
+                              <div className="truncate">
+                                <p className="text-xs font-semibold truncate">{group.subject}</p>
+                                <p className="text-[10px] text-slate-500 font-mono truncate">{group.id.split('@')[0]}</p>
+                              </div>
+                            </div>
+
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              {group.announce && !group.isBotAdmin ? (
+                                <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400">
+                                  Admin Only
+                                </span>
+                              ) : (
+                                <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400">
+                                  Open
+                                </span>
+                              )}
+                              <span className="text-[10px] text-slate-400">
+                                {group.size || group.participantsCount || 0}
+                              </span>
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                </>
+              )}
+
+              {/* MODE B: TAGGED CONTACTS SELECTOR */}
+              {campaignMode === 'tagged_contacts' && (
+                <>
+                  <div className="flex items-center justify-between">
+                    <h4 className="font-bold text-white text-xs sm:text-sm flex items-center gap-2">
+                      <Tags className="w-4 h-4 text-emerald-400" />
+                      1. Target Categories ({selectedTags.length} Selected)
+                    </h4>
+                    <button
+                      onClick={fetchTagsAndContacts}
+                      className="p-1.5 rounded-lg bg-[#0b141a] hover:bg-[#202c33] text-slate-400 hover:text-emerald-400 transition-all cursor-pointer"
+                      title="Refresh tags"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${loadingTagsAndContacts ? 'animate-spin text-emerald-400' : ''}`} />
+                    </button>
+                  </div>
+
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-semibold text-emerald-400">
+                      Audience: {matchedTaggedContacts.length} Contacts
+                    </span>
+                    <button
+                      onClick={handleSelectAllTags}
+                      className="px-2.5 py-1 rounded-xl bg-[#0b141a] hover:bg-[#202c33] border border-[#202c33] text-[11px] font-semibold text-slate-300 transition-all cursor-pointer"
+                    >
+                      {selectedTags.length === tags.length && tags.length > 0 ? 'Deselect All' : 'Select All Tags'}
+                    </button>
+                  </div>
+
+                  {/* Tag Selector Cards */}
+                  <div className="space-y-2 max-h-96 overflow-y-auto pr-1 scrollbar-thin">
+                    {tags.map(tag => {
+                      const isSelected = selectedTags.includes(tag.id);
+                      const count = contacts.filter(c => c.tags?.includes(tag.id)).length;
+                      return (
+                        <div
+                          key={tag.id}
+                          onClick={() => toggleTagSelection(tag.id)}
+                          className={`p-3 rounded-xl border flex items-center justify-between gap-3 cursor-pointer transition-all ${
+                            isSelected
+                              ? 'border-white/40 shadow-lg'
+                              : 'bg-[#0b141a] border-[#202c33] text-slate-300 hover:border-slate-700'
+                          }`}
+                          style={{
+                            backgroundColor: isSelected ? `${tag.color}22` : undefined,
+                            borderColor: isSelected ? tag.color : undefined
+                          }}
+                        >
+                          <div className="flex items-center gap-3 truncate min-w-0">
+                            <div className={`w-4 h-4 rounded flex items-center justify-center border shrink-0 transition-all ${
+                              isSelected ? 'text-white' : 'border-slate-600'
+                            }`}
+                            style={{ backgroundColor: isSelected ? tag.color : undefined, borderColor: isSelected ? tag.color : undefined }}
+                            >
+                              {isSelected && <Check className="w-3 h-3 stroke-[3]" />}
+                            </div>
+                            <div className="truncate">
+                              <div className="flex items-center gap-2">
+                                <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: tag.color }} />
+                                <p className="text-xs font-bold text-white truncate">{tag.name}</p>
+                              </div>
+                              {tag.description && (
+                                <p className="text-[10px] text-slate-400 mt-0.5 truncate">{tag.description}</p>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="text-right shrink-0">
+                            <span className="text-xs font-bold text-white font-mono">{count}</span>
+                            <span className="text-[10px] text-slate-500 block">contacts</span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
+
+            </div>
+
+            {/* Right Column: Template, Image Attachment & Anti-Ban Config */}
+            <div className="lg:col-span-7 space-y-4">
+              
+              {/* Spintax Message Composer */}
+              <div className="p-4 sm:p-5 rounded-2xl bg-[#111b21] border border-[#202c33] space-y-4 shadow-xl">
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <h4 className="font-bold text-white text-xs sm:text-sm flex items-center gap-2">
+                    <Shuffle className="w-4 h-4 text-emerald-400" />
+                    2. Spintax Message Composer
+                  </h4>
+                  <button
+                    onClick={generateSpintaxPreview}
+                    disabled={loadingSpintax}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#0b141a] hover:bg-[#202c33] border border-[#202c33] text-xs font-semibold text-emerald-400 transition-all cursor-pointer"
+                  >
+                    <Sparkles className="w-3.5 h-3.5" />
+                    Preview Variations
+                  </button>
+                </div>
+
+                {/* Variables Bar */}
+                {campaignMode === 'tagged_contacts' && (
+                  <div className="flex flex-wrap items-center gap-1.5 bg-[#0b141a] p-2.5 rounded-xl border border-[#202c33]">
+                    <span className="text-[10px] font-bold text-slate-400 uppercase mr-1">Variables:</span>
+                    {['{name}', '{first_name}', '{phone}', '{tag}'].map(v => (
+                      <button
+                        key={v}
+                        type="button"
+                        onClick={() => insertVariable(v)}
+                        className="px-2 py-1 rounded-lg bg-[#111b21] hover:bg-emerald-600/30 text-emerald-400 text-[11px] font-mono border border-emerald-500/20 transition-all cursor-pointer"
+                      >
+                        {v}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                <textarea
+                  value={templateText}
+                  onChange={(e) => setTemplateText(e.target.value)}
+                  rows={4}
+                  placeholder="Type message using Spintax syntax like {Hello|Hi|Hey} {name|friend}..."
+                  className="w-full bg-[#0b141a] border border-[#202c33] focus:border-emerald-500 rounded-xl p-3 text-xs md:text-sm text-white placeholder-slate-600 outline-none font-mono leading-relaxed resize-none"
+                />
+
+                {/* Direct Image File Upload Section */}
+                <div className="p-3.5 rounded-2xl bg-[#0b141a] border border-[#202c33] space-y-3">
+                  <div className="flex items-center justify-between flex-wrap gap-1">
+                    <label className="text-xs font-bold text-white flex items-center gap-1.5">
+                      <ImageIcon className="w-4 h-4 text-emerald-400" />
+                      Attach Campaign Image (Upload or URL)
+                    </label>
+                    <span className="text-[10px] text-slate-400">PNG, JPG, WebP</span>
+                  </div>
+
+                  <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3">
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept="image/*"
+                      onChange={handleImageUpload}
+                      className="hidden"
+                      id="campaign-image-upload"
+                    />
+
+                    <label
+                      htmlFor="campaign-image-upload"
+                      className="flex items-center gap-2 px-4 py-2 rounded-xl bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/40 text-xs font-semibold cursor-pointer transition-all w-full sm:w-auto justify-center"
+                    >
+                      <Upload className="w-3.5 h-3.5" />
+                      <span>{imageUrl ? 'Change Image File' : 'Upload Image File'}</span>
+                    </label>
+
+                    {imageUrl && (
+                      <button
+                        type="button"
+                        onClick={handleClearImage}
+                        className="flex items-center gap-1 px-3 py-2 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20 text-xs font-medium cursor-pointer transition-all"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        <span>Remove</span>
+                      </button>
+                    )}
+                  </div>
+
+                  {/* URL Fallback */}
+                  <input
+                    type="url"
+                    value={imageUrl.startsWith('data:') ? '' : imageUrl}
+                    onChange={(e) => setImageUrl(e.target.value)}
+                    placeholder="Or enter image URL: https://example.com/banner.jpg"
+                    className="w-full bg-[#111b21] border border-[#202c33] focus:border-emerald-500 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-600 outline-none"
+                  />
+
+                  {/* Image Preview Box */}
+                  {imageUrl && (
+                    <div className="relative rounded-xl overflow-hidden border border-emerald-500/40 bg-black/40 p-2 flex items-center gap-3">
+                      <img
+                        src={imageUrl}
+                        alt="Preview"
+                        className="w-16 h-16 object-cover rounded-lg border border-[#202c33]"
+                      />
+                      <div className="text-xs space-y-0.5 truncate">
+                        <p className="font-semibold text-emerald-300 truncate">
+                          {imageFileName || 'Campaign Banner Image Attached'}
+                        </p>
+                        <p className="text-[10px] text-slate-400">Sent with caption to all recipients</p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Spintax Samples Preview Box */}
+                {spintaxSamples.length > 0 && (
+                  <div className="p-3 rounded-xl bg-[#0b141a] border border-emerald-500/20 space-y-2">
+                    <p className="text-[10px] font-bold text-emerald-400 uppercase tracking-wider">Live Spintax Variations:</p>
+                    {spintaxSamples.map((sample, idx) => (
+                      <div key={idx} className="p-2 rounded-lg bg-[#111b21] border border-[#202c33] text-xs text-slate-200 font-mono whitespace-pre-wrap">
+                        <span className="text-slate-500 text-[10px] mr-2">#{idx + 1}</span>
+                        {sample}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Anti-Ban Pacing Controls */}
+              <div className="p-4 sm:p-5 rounded-2xl bg-[#111b21] border border-[#202c33] space-y-4 shadow-xl">
+                <h4 className="font-bold text-white text-xs sm:text-sm flex items-center gap-2">
+                  <ShieldCheck className="w-4 h-4 text-emerald-400" />
+                  3. Anti-Ban Random Pacing & Safeguards
+                </h4>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="p-3 rounded-xl bg-[#0b141a] border border-[#202c33] space-y-2">
+                    <div className="flex items-center justify-between text-xs font-semibold text-slate-300">
+                      <span>Random Jitter Interval</span>
+                      <span className="text-emerald-400 font-mono">{minDelaySec}s – {maxDelaySec}s</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[9px] text-slate-500">5s</span>
+                      <input
+                        type="range"
+                        min="5"
+                        max="60"
+                        value={minDelaySec}
+                        onChange={(e) => {
+                          const val = Number(e.target.value);
+                          setMinDelaySec(val);
+                          if (val > maxDelaySec) setMaxDelaySec(val + 5);
+                        }}
+                        className="flex-1 accent-emerald-500 cursor-pointer"
+                      />
+                      <input
+                        type="range"
+                        min="10"
+                        max="90"
+                        value={maxDelaySec}
+                        onChange={(e) => {
+                          const val = Number(e.target.value);
+                          setMaxDelaySec(val);
+                          if (val < minDelaySec) setMinDelaySec(val - 5);
+                        }}
+                        className="flex-1 accent-emerald-500 cursor-pointer"
+                      />
+                      <span className="text-[9px] text-slate-500">90s</span>
+                    </div>
+                  </div>
+
+                  <div className="p-3 rounded-xl bg-[#0b141a] border border-[#202c33] space-y-2">
+                    <div className="flex items-center justify-between text-xs font-semibold text-slate-300">
+                      <span>Batch Rest Pause</span>
+                      <span className="text-emerald-400 font-mono">{batchPauseMinutes}m rest / {batchSize} sends</span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <select
+                        value={batchSize}
+                        onChange={(e) => setBatchSize(Number(e.target.value))}
+                        className="bg-[#111b21] border border-[#202c33] rounded-lg px-2 py-1 text-xs text-white outline-none"
+                      >
+                        <option value={5}>Every 5 sends</option>
+                        <option value={10}>Every 10 sends</option>
+                        <option value={15}>Every 15 sends</option>
+                        <option value={20}>Every 20 sends</option>
+                      </select>
+                      <select
+                        value={batchPauseMinutes}
+                        onChange={(e) => setBatchPauseMinutes(Number(e.target.value))}
+                        className="bg-[#111b21] border border-[#202c33] rounded-lg px-2 py-1 text-xs text-white outline-none"
+                      >
+                        <option value={1}>1 Min Rest</option>
+                        <option value={2}>2 Min Rest</option>
+                        <option value={3}>3 Min Rest</option>
+                        <option value={5}>5 Min Rest</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* 4. REPETITIVE AUTO-POSTING SCHEDULE SETTINGS */}
+              <div className="p-4 sm:p-5 rounded-2xl bg-[#111b21] border border-[#202c33] space-y-4 shadow-xl">
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <h4 className="font-bold text-white text-xs sm:text-sm flex items-center gap-2">
+                    <Repeat className="w-4 h-4 text-emerald-400" />
+                    4. Repetitive Auto-Posting (Automatic Group Post)
+                  </h4>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <span className="text-xs text-slate-300 font-medium">Enable Recurring:</span>
+                    <input
+                      type="checkbox"
+                      checked={repeatEnabled}
+                      onChange={(e) => setRepeatEnabled(e.target.checked)}
+                      className="w-4 h-4 accent-emerald-500 rounded cursor-pointer"
+                    />
+                  </label>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                      Campaign Label / Name
+                    </label>
+                    <input
+                      type="text"
+                      value={campaignName}
+                      onChange={(e) => setCampaignName(e.target.value)}
+                      placeholder="e.g. Daily Promo to 40 Groups"
+                      className="w-full bg-[#0b141a] border border-[#202c33] focus:border-emerald-500 rounded-xl px-3 py-2 text-xs text-white outline-none"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                      Repeat Frequency Interval
+                    </label>
+                    <select
+                      value={repeatIntervalHours}
+                      onChange={(e) => setRepeatIntervalHours(Number(e.target.value))}
+                      disabled={!repeatEnabled}
+                      className="w-full bg-[#0b141a] border border-[#202c33] focus:border-emerald-500 rounded-xl px-3 py-2 text-xs text-white outline-none disabled:opacity-50"
+                    >
+                      <option value={1}>Every 1 hour (Frequent auto-post)</option>
+                      <option value={2}>Every 2 hours (Recommended)</option>
+                      <option value={4}>Every 4 hours</option>
+                      <option value={6}>Every 6 hours</option>
+                      <option value={12}>Every 12 hours (Twice daily)</option>
+                      <option value={24}>Every 24 hours (Once daily)</option>
+                      <option value={48}>Every 48 hours (Every 2 days)</option>
+                    </select>
+                  </div>
+                </div>
+
+                {repeatEnabled && (
+                  <div className="p-3 rounded-xl bg-emerald-950/30 border border-emerald-500/20 text-[11px] text-slate-300 flex items-center justify-between">
+                    <span className="flex items-center gap-1.5 text-emerald-400 font-medium">
+                      <Zap className="w-3.5 h-3.5" />
+                      The system will auto-post in groups for you automatically every {repeatIntervalHours}h!
+                    </span>
+                    <span className="text-slate-400 text-[10px]">Continuous 24/7 Loop</span>
+                  </div>
+                )}
+
+                {errorMsg && (
+                  <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-400 text-xs flex items-center gap-2">
+                    <AlertTriangle className="w-4 h-4 shrink-0" />
+                    <span>{errorMsg}</span>
+                  </div>
+                )}
+
+                {/* Dual Action Buttons: Recurring Auto-Post vs One-Time */}
+                <div className="flex flex-col sm:flex-row items-center gap-3 pt-2">
+                  <button
+                    onClick={() => handleScheduleAutoCampaign(true)}
+                    disabled={
+                      savingScheduled || 
+                      isCampaignActive || 
+                      (campaignMode === 'groups' && selectedGroupJids.length === 0) ||
+                      (campaignMode === 'tagged_contacts' && selectedTags.length === 0)
+                    }
+                    className="w-full sm:flex-1 py-3 px-4 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-500 hover:from-emerald-500 hover:to-teal-400 text-white font-bold text-xs sm:text-sm transition-all shadow-xl disabled:opacity-40 flex items-center justify-center gap-2 cursor-pointer"
+                  >
+                    {savingScheduled ? (
+                      <>
+                        <RefreshCw className="w-4 h-4 animate-spin" />
+                        <span>Activating Auto-Campaign...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Repeat className="w-4 h-4" />
+                        <span>Activate 24/7 Auto-Campaign (Every {repeatIntervalHours}h)</span>
+                      </>
+                    )}
+                  </button>
+
+                  <button
+                    onClick={handleStartCampaign}
+                    disabled={
+                      startingCampaign || 
+                      isCampaignActive || 
+                      (campaignMode === 'groups' && selectedGroupJids.length === 0) ||
+                      (campaignMode === 'tagged_contacts' && selectedTags.length === 0)
+                    }
+                    className="w-full sm:w-auto py-3 px-4 rounded-xl bg-[#0b141a] hover:bg-[#1f2c34] text-slate-200 hover:text-white border border-[#202c33] font-semibold text-xs transition-all disabled:opacity-40 flex items-center justify-center gap-1.5 cursor-pointer"
+                  >
+                    <Rocket className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>Run Once</span>
+                  </button>
+                </div>
+
+              </div>
+
+            </div>
+
+          </div>
+        </>
+      )}
+
+      {/* SUBTAB 2: SCHEDULED & RECURRING AUTO-CAMPAIGNS (AUTO-POSTER QUEUE) */}
+      {activeViewTab === 'scheduled' && (
+        <div className="space-y-4">
+          <div className="p-4 sm:p-5 rounded-2xl bg-[#111b21] border border-[#202c33] flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xl">
+            <div>
+              <h3 className="text-sm sm:text-base font-bold text-white flex items-center gap-2">
+                <Repeat className="w-4 h-4 text-emerald-400" />
+                24/7 Recurring Auto-Campaigns Manager
+              </h3>
+              <p className="text-xs text-slate-400 mt-0.5">
+                The engine automatically posts into groups for you at your chosen repeat schedule. You can manage or delete any campaign anytime.
+              </p>
+            </div>
+
+            <button
+              onClick={() => setActiveViewTab('composer')}
+              className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs transition-all shadow cursor-pointer flex items-center gap-1.5 shrink-0"
+            >
+              <Rocket className="w-3.5 h-3.5" />
+              <span>+ Create Auto-Campaign</span>
+            </button>
+          </div>
+
+          {/* List of Scheduled Recurring Campaigns */}
+          {scheduledCampaigns.length === 0 ? (
+            <div className="p-12 rounded-2xl bg-[#111b21] border border-[#202c33] text-center space-y-3">
+              <div className="w-12 h-12 rounded-2xl bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 flex items-center justify-center mx-auto">
+                <Repeat className="w-6 h-6" />
+              </div>
+              <h4 className="text-sm font-bold text-white">No Active Recurring Auto-Campaigns Yet</h4>
+              <p className="text-xs text-slate-400 max-w-md mx-auto">
+                Set up an auto-post campaign with Spintax messages and select repeat frequency. The system will automatically post to your groups 24/7 without manual intervention.
+              </p>
+              <button
+                onClick={() => setActiveViewTab('composer')}
+                className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold transition-all cursor-pointer inline-flex items-center gap-1.5"
+              >
+                <span>Set Up First Auto-Campaign</span>
+              </button>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {scheduledCampaigns.map((sc) => {
+                const isDue = sc.enabled && new Date(sc.nextRunAt).getTime() <= Date.now();
+                const nextDate = new Date(sc.nextRunAt);
+                const nextTimeString = isNaN(nextDate.getTime()) ? 'Pending' : nextDate.toLocaleString();
+                const targetCount = sc.targetMode === 'tagged_contacts' 
+                  ? `${sc.targetTags?.length || 0} Tags` 
+                  : `${sc.targetGroupJids?.length || 0} Groups`;
+
+                return (
+                  <div 
+                    key={sc.id}
+                    className={`p-4 rounded-2xl border transition-all flex flex-col justify-between space-y-3 ${
+                      sc.enabled
+                        ? 'bg-[#111b21] border-emerald-500/30 shadow-lg'
+                        : 'bg-[#111b21]/70 border-[#202c33] opacity-80'
+                    }`}
+                  >
+                    <div className="space-y-2">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <h4 className="font-bold text-white text-xs sm:text-sm truncate">
+                            {sc.name}
+                          </h4>
+                          <p className="text-[11px] text-slate-400 font-mono mt-0.5">
+                            Target: {targetCount} • {sc.targetMode === 'groups' ? 'Multi-Group' : 'Tagged Contacts'}
+                          </p>
+                        </div>
+
+                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider shrink-0 ${
+                          sc.enabled 
+                            ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' 
+                            : 'bg-slate-800 text-slate-400 border border-slate-700'
+                        }`}>
+                          {sc.enabled ? (isDue ? 'Auto-Posting Now' : 'Active 24/7') : 'Paused'}
+                        </span>
+                      </div>
+
+                      {/* Content Preview */}
+                      <p className="text-xs text-slate-300 font-mono line-clamp-2 bg-[#0b141a] p-2 rounded-xl border border-[#202c33]">
+                        {sc.templateText || '[Image Broadcast]'}
+                      </p>
+
+                      {/* Repeat Schedule & Status Details */}
+                      <div className="grid grid-cols-2 gap-2 text-[11px] pt-1">
+                        <div className="bg-[#0b141a] p-2 rounded-lg border border-[#202c33]">
+                          <span className="text-slate-400 block text-[10px]">Repeat Frequency</span>
+                          <span className="text-emerald-400 font-semibold">Every {sc.repeatIntervalHours} Hours</span>
+                        </div>
+                        <div className="bg-[#0b141a] p-2 rounded-lg border border-[#202c33]">
+                          <span className="text-slate-400 block text-[10px]">Current Progress</span>
+                          <span className="text-white font-mono font-semibold">Run #{sc.currentIteration || 0}</span>
+                        </div>
+                      </div>
+
+                      <div className="bg-[#0b141a] p-2.5 rounded-xl border border-[#202c33] text-[11px] flex items-center justify-between">
+                        <span className="text-slate-400">Next Auto-Post:</span>
+                        <span className="text-amber-400 font-mono font-semibold flex items-center gap-1">
+                          <Clock className="w-3.5 h-3.5" />
+                          {sc.enabled ? nextTimeString : 'Paused'}
+                        </span>
+                      </div>
+
+                      {sc.lastRunAt && (
+                        <p className="text-[10px] text-slate-400">
+                          Last run: {new Date(sc.lastRunAt).toLocaleTimeString()} ({sc.lastRunStats?.sent || 0} sent, {sc.lastRunStats?.failed || 0} failed)
+                        </p>
+                      )}
+                    </div>
+
+                    {/* Action Buttons: Run Now, Toggle Active, and DELETE CAMPAIGN */}
+                    <div className="pt-2 border-t border-[#202c33] flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          onClick={() => handleRunScheduledNow(sc.id)}
+                          className="px-2.5 py-1.5 rounded-xl bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 text-xs font-semibold transition-all cursor-pointer flex items-center gap-1"
+                          title="Trigger auto-post immediately now"
+                        >
+                          <Play className="w-3 h-3" />
+                          <span>Run Now</span>
+                        </button>
+
+                        <button
+                          onClick={() => handleToggleScheduledCampaign(sc.id)}
+                          className={`px-2.5 py-1.5 rounded-xl text-xs font-semibold border transition-all cursor-pointer flex items-center gap-1 ${
+                            sc.enabled
+                              ? 'bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border-amber-500/30'
+                              : 'bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
+                          }`}
+                        >
+                          {sc.enabled ? <Pause className="w-3 h-3" /> : <Play className="w-3 h-3" />}
+                          <span>{sc.enabled ? 'Pause' : 'Resume'}</span>
+                        </button>
+                      </div>
+
+                      {/* Delete Campaign Button (User can delete a campaign!) */}
+                      {deleteConfirmId === sc.id ? (
+                        <div className="flex items-center gap-1">
+                          <button
+                            onClick={() => handleDeleteScheduledCampaign(sc.id)}
+                            className="px-2.5 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold transition-all cursor-pointer shadow"
+                          >
+                            Confirm Delete
+                          </button>
+                          <button
+                            onClick={() => setDeleteConfirmId(null)}
+                            className="px-2 py-1.5 rounded-xl bg-slate-800 text-slate-300 text-xs transition-all cursor-pointer"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => setDeleteConfirmId(sc.id)}
+                          className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 hover:text-rose-300 border border-rose-500/20 text-xs font-medium transition-all cursor-pointer"
+                          title="Delete this campaign permanently"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          <span>Delete</span>
+                        </button>
+                      )}
+                    </div>
+
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
 
     </div>
   );

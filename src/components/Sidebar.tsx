@@ -342,8 +342,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
         {/* Bottom Sidebar Action Center */}
         <div className="p-3 border-t border-[#202c33] bg-[#0b141a]/60 space-y-2">
-          {/* PWA Install Button */}
-          {onInstallClick && (
+          {/* PWA Install Button — Only shown if not already installed */}
+          {onInstallClick && !isInstalled && (
             <button
               onClick={() => {
                 onInstallClick();
@@ -353,7 +353,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             >
               <div className="flex items-center gap-2">
                 <Smartphone className="w-4 h-4 text-emerald-400" />
-                <span>{isInstalled ? 'App Installed' : 'Install Mobile App'}</span>
+                <span>Install Mobile App</span>
               </div>
               <Download className="w-3.5 h-3.5" />
             </button>
@@ -370,15 +370,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
               className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 hover:text-rose-300 border border-rose-500/20 text-xs font-semibold transition-all cursor-pointer disabled:opacity-50"
             >
               <LogOut className="w-3.5 h-3.5" />
-              <span>{isLoggingOut ? 'Disconnecting...' : 'Disconnect WhatsApp'}</span>
+              <span>{isLoggingOut ? 'Disconnecting...' : 'Disconnect Line'}</span>
             </button>
           )}
 
-          <div className="flex items-center justify-between text-[10px] text-slate-400 px-1 pt-1 font-mono">
-            <span>Firebase Synced</span>
-            <span className="flex items-center gap-1 text-emerald-400">
+          <div className="flex items-center justify-between text-[10px] text-slate-400 px-1 pt-1">
+            <span>24/7 Cloud Automation</span>
+            <span className="flex items-center gap-1 text-emerald-400 font-medium">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-              Europe-West2
+              Active & Protected
             </span>
           </div>
         </div>
