@@ -393,12 +393,39 @@ interface AccountRuntime {
   stats: EngineStats;
 }
 
-const ACCOUNTS_FILE = path.join(__dirname, 'accounts.json');
-const SESSIONS_BASE_DIR = process.env.DATA_DIR || path.join(__dirname, 'session_auth');
+function resolveSafeDataDir(): string {
+  if (process.env.DATA_DIR && process.env.DATA_DIR.trim()) {
+    const candidate = path.resolve(process.env.DATA_DIR.trim());
+    try {
+      if (!fs.existsSync(candidate)) {
+        fs.mkdirSync(candidate, { recursive: true });
+      }
+      const testFile = path.join(candidate, '.write_test_' + Date.now());
+      fs.writeFileSync(testFile, 'ok');
+      fs.unlinkSync(testFile);
+      return candidate;
+    } catch (e: any) {
+      console.warn(`[Storage Warning] DATA_DIR "${candidate}" is not writable (${e?.message}). Falling back to local workspace directory.`);
+    }
+  }
 
-if (!fs.existsSync(SESSIONS_BASE_DIR)) {
-  fs.mkdirSync(SESSIONS_BASE_DIR, { recursive: true });
+  try {
+    const localDir = path.join(__dirname, 'session_auth');
+    if (!fs.existsSync(localDir)) {
+      fs.mkdirSync(localDir, { recursive: true });
+    }
+    return localDir;
+  } catch (e) {
+    const tmpDir = path.join('/tmp', 'session_auth');
+    if (!fs.existsSync(tmpDir)) {
+      fs.mkdirSync(tmpDir, { recursive: true });
+    }
+    return tmpDir;
+  }
 }
+
+const ACCOUNTS_FILE = path.join(__dirname, 'accounts.json');
+const SESSIONS_BASE_DIR = resolveSafeDataDir();
 
 // Migrate legacy single session auth directory if needed
 const legacyCreds = path.join(SESSIONS_BASE_DIR, 'creds.json');
@@ -3252,13 +3279,65 @@ async function startServer() {
   const distHtml = path.join(distDir, 'index.html');
   const rootHtml = path.join(__dirname, 'index.html');
 
-  if (isProduction && fs.existsSync(distHtml)) {
-    console.log('Serving production build from dist/');
-    app.use(express.static(distDir));
+  // Robust production detection across Render, Google Cloud, Docker, and standard Node
+  const isProdDeployment = 
+    process.env.NODE_ENV === 'production' ||
+    process.env.RENDER === 'true' ||
+    Boolean(process.env.RENDER_SERVICE_ID) ||
+    Boolean(process.env.K_SERVICE) ||
+    Boolean(process.env.GAE_SERVICE) ||
+    !fs.existsSync(path.join(__dirname, 'src'));
+
+  // Ensure production bundle exists if running in production mode
+  let hasDist = fs.existsSync(distHtml);
+  if (!hasDist && isProdDeployment) {
+    console.log('[Engine Boot] Production dist/ not found. Compiling client bundle on the fly...');
+    try {
+      const { build } = await import('vite');
+      await build({
+        configFile: path.join(__dirname, 'vite.config.ts'),
+        mode: 'production'
+      });
+      hasDist = fs.existsSync(distHtml);
+      console.log(`[Engine Boot] Client bundle compilation ${hasDist ? 'succeeded' : 'completed without dist'}.`);
+    } catch (buildErr: any) {
+      console.error('[Engine Boot] Client build failed during startup:', buildErr?.message || buildErr);
+    }
+  }
+
+  console.log(`[Engine Boot] Environment: ${isProdDeployment ? 'PRODUCTION' : 'DEVELOPMENT'} | Static Bundle: ${hasDist ? 'AVAILABLE' : 'ABSENT'}`);
+
+  if (hasDist) {
+    console.log('[Engine Boot] Serving precompiled production build from ./dist');
+    
+    // Serve hashed assets with aggressive immutable caching
+    app.use('/assets', express.static(path.join(distDir, 'assets'), {
+      maxAge: '1y',
+      immutable: true
+    }));
+
+    // Serve public static assets (icons, manifest, etc.)
+    app.use(express.static(distDir, {
+      maxAge: '1d',
+      setHeaders: (res, filePath) => {
+        if (filePath.endsWith('sw.js') || filePath.endsWith('manifest.json') || filePath.endsWith('index.html')) {
+          res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+        }
+      }
+    }));
+    
+    // SPA Wildcard Route: Always serve index.html with no-cache headers to prevent stale bundle mismatch
     app.get('*', (req, res) => {
+      if (req.originalUrl.startsWith('/api')) {
+        return res.status(404).json({ error: `API endpoint ${req.originalUrl} not found` });
+      }
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
       res.sendFile(distHtml);
     });
-  } else {
+  } else if (!isProdDeployment) {
+    // Development mode with Vite dev middleware
     try {
       const { createServer: createViteServer } = await import('vite');
       const vite = await createViteServer({
@@ -3274,7 +3353,7 @@ async function startServer() {
           if (fs.existsSync(rootHtml)) {
             let template = fs.readFileSync(rootHtml, 'utf-8');
             template = await vite.transformIndexHtml(url, template);
-            res.status(200).set({ 'Content-Type': 'text/html' }).end(template);
+            res.status(200).set({ 'Content-Type': 'text/html; charset=utf-8' }).end(template);
           } else if (fs.existsSync(distHtml)) {
             res.sendFile(distHtml);
           } else {
@@ -3285,13 +3364,38 @@ async function startServer() {
           next(e);
         }
       });
-    } catch (e) {
-      console.log('Running in static fallback mode');
-      if (fs.existsSync(distDir)) {
-        app.use(express.static(distDir));
-        app.get('*', (req, res) => res.sendFile(distHtml));
-      }
+    } catch (e: any) {
+      console.warn('[Engine Boot] Vite middleware initialization note:', e?.message || e);
     }
+  } else {
+    // Production emergency fallback if dist bundle could not be generated
+    app.get('*', (req, res) => {
+      if (req.originalUrl.startsWith('/api')) {
+        return res.status(404).json({ error: `API endpoint ${req.originalUrl} not found` });
+      }
+      res.status(200).set({ 'Content-Type': 'text/html; charset=utf-8' }).send(`
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <title>WhatsApp Engine • Building</title>
+          <style>
+            body { background: #0b141a; color: #e2e8f0; font-family: system-ui, sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 1rem; }
+            .card { background: #111b21; border: 1px solid #202c33; border-radius: 1.5rem; padding: 2rem; max-width: 440px; text-align: center; }
+            .btn { background: #10b981; color: white; border: none; padding: 0.65rem 1.25rem; border-radius: 0.75rem; font-weight: 600; cursor: pointer; text-decoration: none; display: inline-block; margin-top: 1rem; }
+          </style>
+        </head>
+        <body>
+          <div class="card">
+            <h2 style="color:#10b981;margin-top:0;">WhatsApp Engine Online</h2>
+            <p style="color:#94a3b8;font-size:0.875rem;">Backend automation is running. The client interface is completing its initial compilation.</p>
+            <a href="/" class="btn" onclick="window.location.reload()">Reload Application</a>
+          </div>
+        </body>
+        </html>
+      `);
+    });
   }
 
   app.listen(PORT, '0.0.0.0', () => {

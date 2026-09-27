@@ -24,9 +24,20 @@ import {
 } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
 
-// Initialize Firebase
-const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+// Safe resolved Firebase configuration
+const resolvedConfig = {
+  projectId: firebaseConfig?.projectId || 'gen-lang-client-0116158889',
+  appId: firebaseConfig?.appId || '1:667773287644:web:ee5d0e535c630c576bc819',
+  apiKey: firebaseConfig?.apiKey || 'AIzaSyCuctgT-roPM3Xz5gK9UlG4cRCW4Or6n1Q',
+  authDomain: firebaseConfig?.authDomain || 'gen-lang-client-0116158889.firebaseapp.com',
+  firestoreDatabaseId: firebaseConfig?.firestoreDatabaseId || 'ai-studio-whtssapmate-36334417-8d27-498c-b988-617e815ef623',
+  storageBucket: firebaseConfig?.storageBucket || 'gen-lang-client-0116158889.firebasestorage.app',
+  messagingSenderId: firebaseConfig?.messagingSenderId || '667773287644'
+};
+
+// Initialize Firebase with fallback protection
+const app = !getApps().length ? initializeApp(resolvedConfig) : getApp();
+export const db = getFirestore(app, resolvedConfig.firestoreDatabaseId);
 export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
 
