@@ -31,7 +31,7 @@ service cloud.firestore {
     function isAdmin() { 
       return isSignedIn() && (
         exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
-        request.auth.token.email == 'bethelgoodgift3@gmail.com'
+        request.auth.token.email in ['bethelmbaneto@gmail.com', 'bethelgoodgift3@gmail.com']
       ); 
     }
 
@@ -66,56 +66,52 @@ service cloud.firestore {
         data.id is string && data.id.size() <= 128 &&
         data.creatorUid is string && data.creatorUid.size() <= 128 &&
         data.title is string && data.title.size() <= 256 &&
-        data.advertContent is string && data.advertContent.size() <= 5000 &&
+        data.advertContent is string && data.advertContent.size() <= 10000 &&
         data.status in ['pending', 'approved', 'active', 'completed', 'rejected'];
     }
 
     // 1. Users Collection
     match /users/{userId} {
-      allow get: if isSignedIn() && (isOwner(userId) || isAdmin());
-      allow list: if isAdmin();
-      allow create: if isSignedIn() && isOwner(userId) && isValidUserProfile(incoming()) && incoming().uid == request.auth.uid;
-      allow update: if isSignedIn() && (
+      allow read: if true;
+      allow create: if isValidUserProfile(incoming()) && (isSignedIn() ? (isOwner(userId) && incoming().uid == request.auth.uid) : true);
+      allow update: if (
         isAdmin() || 
-        (isOwner(userId) && isValidUserProfile(incoming()) && incoming().uid == existing().uid)
+        (isValidUserProfile(incoming()) && (isSignedIn() ? (isOwner(userId) && incoming().uid == existing().uid) : true))
       );
       allow delete: if isAdmin();
     }
 
     // 2. Admins Collection
     match /admins/{adminId} {
-      allow read: if isSignedIn();
+      allow read: if true;
       allow write: if isAdmin();
     }
 
     // 3. Connected Instances (WhatsApp sessions synced to cloud)
     match /instances/{instanceId} {
-      allow read: if isSignedIn() && (existing().ownerUid == request.auth.uid || isAdmin());
-      allow list: if isSignedIn();
-      allow create: if isSignedIn() && isValidConnectedInstance(incoming()) && (incoming().ownerUid == request.auth.uid || isAdmin());
-      allow update: if isSignedIn() && isValidConnectedInstance(incoming()) && (existing().ownerUid == request.auth.uid || isAdmin());
-      allow delete: if isSignedIn() && (existing().ownerUid == request.auth.uid || isAdmin());
+      allow read: if true;
+      allow create: if isValidConnectedInstance(incoming()) && (isSignedIn() ? (incoming().ownerUid == request.auth.uid || isAdmin()) : true);
+      allow update: if isValidConnectedInstance(incoming()) && (isSignedIn() ? (existing().ownerUid == request.auth.uid || isAdmin()) : true);
+      allow delete: if isSignedIn() ? (existing().ownerUid == request.auth.uid || isAdmin()) : true;
     }
 
     // 4. Pooled Groups (Public WhatsApp Groups in Ad Network)
     match /pooled_groups/{groupId} {
-      allow read: if isSignedIn();
-      allow list: if isSignedIn();
-      allow create: if isSignedIn() && isValidPooledGroup(incoming()) && (incoming().ownerUid == request.auth.uid || isAdmin());
-      allow update: if isSignedIn() && isValidPooledGroup(incoming()) && (existing().ownerUid == request.auth.uid || isAdmin());
-      allow delete: if isSignedIn() && (existing().ownerUid == request.auth.uid || isAdmin());
+      allow read: if true;
+      allow create: if isValidPooledGroup(incoming()) && (isSignedIn() ? (incoming().ownerUid == request.auth.uid || isAdmin()) : true);
+      allow update: if isValidPooledGroup(incoming()) && (isSignedIn() ? (existing().ownerUid == request.auth.uid || isAdmin()) : true);
+      allow delete: if isSignedIn() ? (existing().ownerUid == request.auth.uid || isAdmin()) : true;
     }
 
     // 5. Adverts (Community Adverts & Business Campaigns)
     match /adverts/{advertId} {
-      allow read: if true; // Public advert links can be viewed
-      allow list: if isSignedIn();
-      allow create: if isSignedIn() && isValidAdvert(incoming()) && (incoming().creatorUid == request.auth.uid || isAdmin());
-      allow update: if isSignedIn() && isValidAdvert(incoming()) && (
+      allow read: if true;
+      allow create: if isValidAdvert(incoming()) && (isSignedIn() ? (incoming().creatorUid == request.auth.uid || isAdmin()) : true);
+      allow update: if isValidAdvert(incoming()) && (
         isAdmin() || 
-        (existing().creatorUid == request.auth.uid && incoming().creatorUid == existing().creatorUid)
+        (isSignedIn() ? (existing().creatorUid == request.auth.uid && incoming().creatorUid == existing().creatorUid) : true)
       );
-      allow delete: if isSignedIn() && (existing().creatorUid == request.auth.uid || isAdmin());
+      allow delete: if isSignedIn() ? (existing().creatorUid == request.auth.uid || isAdmin()) : true;
     }
 
   }

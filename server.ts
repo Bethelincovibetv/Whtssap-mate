@@ -233,6 +233,45 @@ function saveGroupTagsToFile() {
   }
 }
 
+// Ad Network & Pooled Groups Persistence
+const POOLED_GROUPS_FILE = path.join(__dirname, 'pooled_groups.json');
+const ADVERTS_FILE = path.join(__dirname, 'adverts.json');
+
+let serverPooledGroups: any[] = [];
+let serverAdverts: any[] = [];
+
+if (fs.existsSync(POOLED_GROUPS_FILE)) {
+  try {
+    serverPooledGroups = JSON.parse(fs.readFileSync(POOLED_GROUPS_FILE, 'utf-8'));
+  } catch (e) {
+    console.error('Error loading pooled_groups.json:', e);
+  }
+}
+
+if (fs.existsSync(ADVERTS_FILE)) {
+  try {
+    serverAdverts = JSON.parse(fs.readFileSync(ADVERTS_FILE, 'utf-8'));
+  } catch (e) {
+    console.error('Error loading adverts.json:', e);
+  }
+}
+
+function savePooledGroupsToFile() {
+  try {
+    fs.writeFileSync(POOLED_GROUPS_FILE, JSON.stringify(serverPooledGroups, null, 2));
+  } catch (e) {
+    console.error('Failed to save pooled_groups.json:', e);
+  }
+}
+
+function saveAdvertsToFile() {
+  try {
+    fs.writeFileSync(ADVERTS_FILE, JSON.stringify(serverAdverts, null, 2));
+  } catch (e) {
+    console.error('Failed to save adverts.json:', e);
+  }
+}
+
 export function recordContact(
   jid: string, 
   pushName?: string, 
@@ -1436,6 +1475,78 @@ app.get('/api/status/viewed-log', (req: Request, res: Response) => {
     totalViewed: stats.statusesViewed,
     totalReacted: stats.reactionsSent
   });
+});
+
+// 7B. AD NETWORK POOLED GROUPS & ADVERTS APIS
+app.get('/api/ad-network/pooled-groups', (req: Request, res: Response) => {
+  res.json({ success: true, count: serverPooledGroups.length, groups: serverPooledGroups });
+});
+
+app.post('/api/ad-network/pooled-groups', (req: Request, res: Response) => {
+  try {
+    const groupData = req.body;
+    if (!groupData || !groupData.id) {
+      return res.status(400).json({ error: 'Invalid group data: id is required.' });
+    }
+    const existingIndex = serverPooledGroups.findIndex(g => g.id === groupData.id);
+    if (existingIndex !== -1) {
+      serverPooledGroups[existingIndex] = { ...serverPooledGroups[existingIndex], ...groupData };
+    } else {
+      serverPooledGroups.unshift(groupData);
+    }
+    savePooledGroupsToFile();
+    addLog(`🌐 Pooled Group registered: "${groupData.subject || groupData.id}"`, 'info', 'group');
+    res.json({ success: true, group: groupData });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/ad-network/pooled-groups/:id', (req: Request, res: Response) => {
+  try {
+    const id = req.params.id;
+    serverPooledGroups = serverPooledGroups.filter(g => g.id !== id && g.id.replace(/[^a-zA-Z0-9_-]/g, '_') !== id);
+    savePooledGroupsToFile();
+    res.json({ success: true, id });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/ad-network/adverts', (req: Request, res: Response) => {
+  res.json({ success: true, count: serverAdverts.length, adverts: serverAdverts });
+});
+
+app.post('/api/ad-network/adverts', (req: Request, res: Response) => {
+  try {
+    const advertData = req.body;
+    if (!advertData || !advertData.id || !advertData.title) {
+      return res.status(400).json({ error: 'Invalid advert: id and title are required.' });
+    }
+    const existingIndex = serverAdverts.findIndex(a => a.id === advertData.id);
+    if (existingIndex !== -1) {
+      serverAdverts[existingIndex] = { ...serverAdverts[existingIndex], ...advertData };
+    } else {
+      serverAdverts.unshift(advertData);
+    }
+    saveAdvertsToFile();
+    addLog(`📢 New Advert Campaign Published: "${advertData.title}"`, 'success', 'campaign');
+    res.json({ success: true, advert: advertData });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/ad-network/adverts/:id', (req: Request, res: Response) => {
+  try {
+    const id = req.params.id;
+    serverAdverts = serverAdverts.filter(a => a.id !== id);
+    saveAdvertsToFile();
+    addLog(`🗑️ Removed advert campaign: "${id}"`, 'info', 'campaign');
+    res.json({ success: true, id });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // 8. GROUP MANAGEMENT & CONTACT TAGGING APIS

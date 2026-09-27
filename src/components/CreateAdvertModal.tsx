@@ -15,7 +15,7 @@ import {
   Trash2
 } from 'lucide-react';
 import { User } from 'firebase/auth';
-import { db, handleFirestoreError, OperationType, isUserAdmin, sanitizeFirestoreData } from '../lib/firebase';
+import { db, auth, handleFirestoreError, OperationType, isUserAdmin, sanitizeFirestoreData } from '../lib/firebase';
 import { doc, setDoc } from 'firebase/firestore';
 import { AdvertCampaign } from '../types';
 
@@ -133,19 +133,32 @@ export const CreateAdvertModal: React.FC<CreateAdvertModalProps> = ({
 
       const cleanData = sanitizeFirestoreData(payload) as AdvertCampaign;
 
-      // Save into Firestore `/adverts/{advertId}`
-      const advertRef = doc(db, 'adverts', advertId);
-      await setDoc(advertRef, cleanData);
+      // 1. Save to server-side persistence
+      await fetch('/api/ad-network/adverts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(cleanData)
+      }).catch((e) => console.warn('Server advert sync note:', e));
+
+      // 2. Save into Firestore `/adverts/{advertId}` if authenticated
+      if (auth.currentUser) {
+        try {
+          const advertRef = doc(db, 'adverts', advertId);
+          await setDoc(advertRef, cleanData);
+        } catch (fsErr) {
+          try {
+            handleFirestoreError(fsErr, OperationType.WRITE, 'adverts');
+          } catch (e) {
+            console.warn('Firestore advert sync note:', e);
+          }
+        }
+      }
 
       onSuccess(cleanData);
       onClose();
-    } catch (err) {
+    } catch (err: any) {
       console.error('Failed to create advert campaign:', err);
-      try {
-        handleFirestoreError(err, OperationType.CREATE, 'adverts');
-      } catch (fErr: any) {
-        setErrorMsg(fErr.message || 'Error submitting advert to Firebase.');
-      }
+      setErrorMsg(err?.message || 'Error submitting advert.');
     } finally {
       setIsSubmitting(false);
     }

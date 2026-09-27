@@ -14,6 +14,7 @@ import { LiveLogsTab } from './components/LiveLogsTab';
 import { RenderDeployTab } from './components/RenderDeployTab';
 import { PwaInstallModal } from './components/PwaInstallModal';
 import { CreateAdvertModal } from './components/CreateAdvertModal';
+import { AuthModal } from './components/AuthModal';
 import { usePwaInstall } from './hooks/usePwaInstall';
 import { EngineStatusResponse, ActivityLog, AdvertCampaign } from './types';
 import { auth, loginWithGoogle, logoutUser, testFirestoreConnection } from './lib/firebase';
@@ -25,12 +26,24 @@ export default function App() {
   const [isLoggingOut, setIsLoggingOut] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [sessionUser, setSessionUser] = useState<{ uid: string; email: string; displayName: string; photoURL?: string } | null>(() => {
+    try {
+      const saved = localStorage.getItem('wm_session_user');
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  });
+  const [showAuthModal, setShowAuthModal] = useState(false);
   const [showCreateAdvertModal, setShowCreateAdvertModal] = useState(false);
   const [campaignPreload, setCampaignPreload] = useState<{
     mode?: 'groups' | 'tagged_contacts';
     targetGroupJids?: string[];
     targetTags?: string[];
   } | null>(null);
+
+  // Effective authenticated user (Firebase user or session user)
+  const effectiveUser = currentUser || (sessionUser as unknown as User) || null;
 
   const {
     isInstallable,
@@ -53,17 +66,22 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  const handleGoogleLogin = async () => {
+  const handleGoogleLogin = () => {
+    setShowAuthModal(true);
+  };
+
+  const handleSessionLogin = (profile: { uid: string; email: string; displayName: string; photoURL?: string }) => {
+    setSessionUser(profile);
     try {
-      await loginWithGoogle();
-    } catch (e) {
-      console.error('Login error:', e);
-    }
+      localStorage.setItem('wm_session_user', JSON.stringify(profile));
+    } catch {}
   };
 
   const handleGoogleLogout = async () => {
     try {
       await logoutUser();
+      setSessionUser(null);
+      localStorage.removeItem('wm_session_user');
     } catch (e) {
       console.error('Logout error:', e);
     }
@@ -136,14 +154,8 @@ export default function App() {
                 pairingCode: payload.pairingCode || null,
                 autoReact: payload.config?.autoReact ?? true,
                 autoView: payload.config?.autoView ?? true,
-                aiResponder: payload.config?.aiResponder ?? true,
-                aiTriggerMode: payload.config?.aiTriggerMode ?? 'all',
-                triggerKeywords: payload.config?.triggerKeywords ?? [],
                 reactionEmojis: payload.config?.reactionEmojis ?? ['🔥', '👏', '❤️'],
-                systemPrompt: payload.config?.systemPrompt ?? '',
                 viewDelaySeconds: payload.config?.viewDelaySeconds ?? 2,
-                typingDelaySeconds: payload.config?.typingDelaySeconds ?? 2,
-                fallbackRules: payload.config?.fallbackRules ?? [],
                 stats: payload.stats,
                 campaign: payload.campaign,
                 activeAccountId: payload.activeAccountId,
@@ -166,14 +178,8 @@ export default function App() {
                 pairingCode: payload.pairingCode || null,
                 autoReact: payload.config?.autoReact ?? prev?.autoReact ?? true,
                 autoView: payload.config?.autoView ?? prev?.autoView ?? true,
-                aiResponder: payload.config?.aiResponder ?? prev?.aiResponder ?? true,
-                aiTriggerMode: payload.config?.aiTriggerMode ?? prev?.aiTriggerMode ?? 'all',
-                triggerKeywords: payload.config?.triggerKeywords ?? prev?.triggerKeywords ?? [],
                 reactionEmojis: payload.config?.reactionEmojis ?? prev?.reactionEmojis ?? ['🔥'],
-                systemPrompt: payload.config?.systemPrompt ?? prev?.systemPrompt ?? '',
                 viewDelaySeconds: payload.config?.viewDelaySeconds ?? prev?.viewDelaySeconds ?? 2,
-                typingDelaySeconds: payload.config?.typingDelaySeconds ?? prev?.typingDelaySeconds ?? 2,
-                fallbackRules: payload.config?.fallbackRules ?? prev?.fallbackRules ?? [],
                 stats: payload.stats || prev?.stats,
                 campaign: payload.campaign || prev?.campaign,
                 activeAccountId: payload.activeAccountId || prev?.activeAccountId,
@@ -291,7 +297,7 @@ export default function App() {
         activeTab={activeTab}
         setActiveTab={setActiveTab}
         statusData={statusData}
-        currentUser={currentUser}
+        currentUser={effectiveUser}
         onGoogleLogin={handleGoogleLogin}
         onGoogleLogout={handleGoogleLogout}
         isOpen={isSidebarOpen}
@@ -315,7 +321,7 @@ export default function App() {
         <Header
           statusData={statusData}
           activeTab={activeTab}
-          currentUser={currentUser}
+          currentUser={effectiveUser}
           onGoogleLogin={handleGoogleLogin}
           onOpenSidebar={() => setIsSidebarOpen(true)}
           onRefresh={fetchStatus}
@@ -332,7 +338,7 @@ export default function App() {
         <main className="flex-1 max-w-7xl w-full mx-auto px-2 sm:px-6 lg:px-8 py-3.5 sm:py-5 min-w-0 overflow-x-hidden">
           {activeTab === 'landing' && (
             <LandingPage
-              currentUser={currentUser}
+              currentUser={effectiveUser}
               onLogin={handleGoogleLogin}
               onGetStarted={() => setActiveTab('connect')}
               onCreateAdvert={() => setShowCreateAdvertModal(true)}
@@ -342,7 +348,7 @@ export default function App() {
           {activeTab === 'ad-network' && (
             <AdNetworkTab
               statusData={statusData}
-              currentUser={currentUser}
+              currentUser={effectiveUser}
               onRefresh={fetchStatus}
               onOpenConnect={() => setActiveTab('connect')}
               onOpenCampaign={(preload) => {
@@ -438,10 +444,17 @@ export default function App() {
       <CreateAdvertModal
         isOpen={showCreateAdvertModal}
         onClose={() => setShowCreateAdvertModal(false)}
-        currentUser={currentUser}
+        currentUser={effectiveUser}
         onSuccess={(newAdv) => {
           setActiveTab('ad-network');
         }}
+      />
+
+      {/* Account Authentication & Domain Helper Modal */}
+      <AuthModal
+        isOpen={showAuthModal}
+        onClose={() => setShowAuthModal(false)}
+        onSessionLogin={handleSessionLogin}
       />
 
       {/* iOS PWA Instructions Modal */}

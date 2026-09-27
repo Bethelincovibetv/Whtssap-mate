@@ -10,7 +10,6 @@ import {
   Rocket,
   Send,
   Eye,
-  Bot,
   Terminal,
   CloudUpload,
   Sparkles,

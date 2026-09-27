@@ -10,7 +10,6 @@ import {
   Info, 
   Eye, 
   Sparkles, 
-  Bot,
   RefreshCw,
   FileSpreadsheet,
   FileCode,

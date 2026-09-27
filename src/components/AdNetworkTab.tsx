@@ -26,7 +26,7 @@ import {
   Send
 } from 'lucide-react';
 import { User } from 'firebase/auth';
-import { db, handleFirestoreError, OperationType, isUserAdmin, ADMIN_EMAIL, sanitizeFirestoreData } from '../lib/firebase';
+import { db, auth, handleFirestoreError, OperationType, isUserAdmin, ADMIN_EMAIL, sanitizeFirestoreData } from '../lib/firebase';
 import { 
   collection, 
   getDocs, 
@@ -94,37 +94,87 @@ export const AdNetworkTab: React.FC<AdNetworkTabProps> = ({
     }
   }, [isConnected]);
 
+  // Fetch Server-stored Pooled Groups and Adverts
+  const fetchNetworkData = useCallback(async () => {
+    try {
+      const [groupsRes, advertsRes] = await Promise.all([
+        fetch('/api/ad-network/pooled-groups'),
+        fetch('/api/ad-network/adverts')
+      ]);
+      if (groupsRes.ok) {
+        const data = await groupsRes.json();
+        if (data.groups && Array.isArray(data.groups)) {
+          setPooledGroups(prev => {
+            // merge server and firestore items uniquely
+            const map = new Map<string, PooledGroup>();
+            prev.forEach(g => map.set(g.id, g));
+            data.groups.forEach((g: PooledGroup) => map.set(g.id, g));
+            return Array.from(map.values());
+          });
+        }
+      }
+      if (advertsRes.ok) {
+        const data = await advertsRes.json();
+        if (data.adverts && Array.isArray(data.adverts)) {
+          setAdverts(prev => {
+            const map = new Map<string, AdvertCampaign>();
+            prev.forEach(a => map.set(a.id, a));
+            data.adverts.forEach((a: AdvertCampaign) => map.set(a.id, a));
+            return Array.from(map.values()).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+          });
+        }
+      }
+    } catch (e) {
+      console.warn('Network data fetch note:', e);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchNetworkData();
+  }, [fetchNetworkData]);
+
   // Listen to Firestore Pooled Groups
   useEffect(() => {
-    if (!currentUser) return;
+    if (!auth.currentUser) return;
+    let unsub: (() => void) | null = null;
     try {
-      const unsub = onSnapshot(collection(db, 'pooled_groups'), (snapshot) => {
+      unsub = onSnapshot(collection(db, 'pooled_groups'), (snapshot) => {
         const list: PooledGroup[] = [];
         snapshot.forEach((d) => {
           list.push(d.data() as PooledGroup);
         });
         setPooledGroups(list);
         
-        // Sync selected group ids belonging to current user
-        const userPooledIds = list
-          .filter(g => g.ownerUid === currentUser.uid && g.isEnabled)
-          .map(g => g.id);
-        if (userPooledIds.length > 0) {
-          setSelectedGroupIds(userPooledIds);
+        // Sync selected group ids belonging to current user if logged in
+        if (currentUser) {
+          const userPooledIds = list
+            .filter(g => g.ownerUid === currentUser.uid && g.isEnabled)
+            .map(g => g.id);
+          if (userPooledIds.length > 0) {
+            setSelectedGroupIds(userPooledIds);
+          }
         }
       }, (err) => {
-        handleFirestoreError(err, OperationType.GET, 'pooled_groups');
+        try {
+          handleFirestoreError(err, OperationType.GET, 'pooled_groups');
+        } catch (fsErr) {
+          console.warn('Firestore subscription fallback:', fsErr);
+        }
       });
-      return () => unsub();
     } catch (e) {
       console.warn('Firestore pooled groups subscription note:', e);
     }
+    return () => {
+      if (unsub) unsub();
+    };
   }, [currentUser]);
 
   // Listen to Firestore Adverts
   useEffect(() => {
+    if (!auth.currentUser) return;
+    let unsub: (() => void) | null = null;
     try {
-      const unsub = onSnapshot(collection(db, 'adverts'), (snapshot) => {
+      unsub = onSnapshot(collection(db, 'adverts'), (snapshot) => {
         const list: AdvertCampaign[] = [];
         snapshot.forEach((d) => {
           list.push(d.data() as AdvertCampaign);
@@ -132,25 +182,31 @@ export const AdNetworkTab: React.FC<AdNetworkTabProps> = ({
         list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
         setAdverts(list);
       }, (err) => {
-        handleFirestoreError(err, OperationType.GET, 'adverts');
+        try {
+          handleFirestoreError(err, OperationType.GET, 'adverts');
+        } catch (fsErr) {
+          console.warn('Firestore adverts subscription fallback:', fsErr);
+        }
       });
-      return () => unsub();
     } catch (e) {
       console.warn('Firestore adverts subscription note:', e);
     }
-  }, []);
+    return () => {
+      if (unsub) unsub();
+    };
+  }, [currentUser]);
 
   // Sync connected WhatsApp session into Firestore
   useEffect(() => {
-    if (isConnected && currentUser && statusData?.phone) {
+    if (isConnected && auth.currentUser && statusData?.phone) {
       const syncInstanceToFirestore = async () => {
         try {
           const instanceId = 'inst_' + (statusData.phone || 'session').replace(/[^0-9]/g, '');
           const instanceRef = doc(db, 'instances', instanceId);
           await setDoc(instanceRef, sanitizeFirestoreData({
             instanceId,
-            ownerUid: currentUser.uid,
-            ownerEmail: currentUser.email || '',
+            ownerUid: auth.currentUser!.uid,
+            ownerEmail: auth.currentUser!.email || '',
             phone: statusData.phone,
             name: statusData.name || 'Promoter Account',
             status: 'connected',
@@ -161,7 +217,11 @@ export const AdNetworkTab: React.FC<AdNetworkTabProps> = ({
             lastActive: new Date().toISOString()
           }), { merge: true });
         } catch (e) {
-          console.warn('Firebase instance sync note:', e);
+          try {
+            handleFirestoreError(e, OperationType.WRITE, 'instances');
+          } catch (fsErr) {
+            console.warn('Firebase instance sync note:', fsErr);
+          }
         }
       };
       syncInstanceToFirestore();
@@ -187,36 +247,55 @@ export const AdNetworkTab: React.FC<AdNetworkTabProps> = ({
     setSelectedGroupIds(newSelected);
     setSavingPool(true);
 
+    const pooledData: PooledGroup = sanitizeFirestoreData({
+      id: group.id,
+      instanceId: 'inst_' + (statusData?.phone || 'session').replace(/[^0-9]/g, ''),
+      ownerUid: currentUser.uid,
+      ownerEmail: currentUser.email || '',
+      subject: group.subject || 'WhatsApp Group',
+      participantsCount: group.size || group.participantsCount || 0,
+      isBotAdmin: !!group.isBotAdmin,
+      isOpenForMessages: !group.announce,
+      isEnabled: true,
+      category: 'General',
+      addedAt: new Date().toISOString()
+    }) as PooledGroup;
+
     try {
-      const groupDocRef = doc(db, 'pooled_groups', group.id.replace(/[^a-zA-Z0-9_-]/g, '_'));
-      
+      // 1. Sync to server-side persistence
       if (isCurrentlyPooled) {
-        await deleteDoc(groupDocRef);
+        await fetch(`/api/ad-network/pooled-groups/${encodeURIComponent(group.id)}`, { method: 'DELETE' }).catch(() => {});
+        setPooledGroups(prev => prev.filter(g => g.id !== group.id));
         setFeedbackMsg({ type: 'success', text: `Removed "${group.subject}" from automated ad pool.` });
       } else {
-        const pooledData: PooledGroup = sanitizeFirestoreData({
-          id: group.id,
-          instanceId: 'inst_' + (statusData?.phone || 'session').replace(/[^0-9]/g, ''),
-          ownerUid: currentUser.uid,
-          ownerEmail: currentUser.email || '',
-          subject: group.subject || 'WhatsApp Group',
-          participantsCount: group.size || group.participantsCount || 0,
-          isBotAdmin: !!group.isBotAdmin,
-          isOpenForMessages: !group.announce,
-          isEnabled: true,
-          category: 'General',
-          addedAt: new Date().toISOString()
-        }) as PooledGroup;
-        await setDoc(groupDocRef, pooledData);
+        await fetch('/api/ad-network/pooled-groups', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(pooledData)
+        }).catch(() => {});
+        setPooledGroups(prev => [pooledData, ...prev.filter(g => g.id !== group.id)]);
         setFeedbackMsg({ type: 'success', text: `✓ Added "${group.subject}" to automated ad campaign network!` });
       }
-    } catch (err) {
-      console.error('Error saving pooled group to Firestore:', err);
-      try {
-        handleFirestoreError(err, OperationType.WRITE, 'pooled_groups');
-      } catch (fErr: any) {
-        setFeedbackMsg({ type: 'error', text: fErr.message });
+
+      // 2. Sync to Firestore if authenticated
+      if (auth.currentUser) {
+        try {
+          const groupDocRef = doc(db, 'pooled_groups', group.id.replace(/[^a-zA-Z0-9_-]/g, '_'));
+          if (isCurrentlyPooled) {
+            await deleteDoc(groupDocRef);
+          } else {
+            await setDoc(groupDocRef, pooledData);
+          }
+        } catch (fsErr) {
+          try {
+            handleFirestoreError(fsErr, isCurrentlyPooled ? OperationType.DELETE : OperationType.WRITE, 'pooled_groups');
+          } catch (e) {
+            console.warn('Firestore pooled group sync note:', e);
+          }
+        }
       }
+    } catch (err) {
+      console.error('Error saving pooled group:', err);
     } finally {
       setSavingPool(false);
     }
@@ -227,9 +306,9 @@ export const AdNetworkTab: React.FC<AdNetworkTabProps> = ({
     if (!currentUser) return;
     setSavingPool(true);
     try {
+      const addedList: PooledGroup[] = [];
       for (const group of localGroups) {
         const safeId = group.id.replace(/[^a-zA-Z0-9_-]/g, '_');
-        const groupDocRef = doc(db, 'pooled_groups', safeId);
         const pooledData: PooledGroup = sanitizeFirestoreData({
           id: group.id,
           instanceId: 'inst_' + (statusData?.phone || 'session').replace(/[^0-9]/g, ''),
@@ -243,9 +322,37 @@ export const AdNetworkTab: React.FC<AdNetworkTabProps> = ({
           category: 'General',
           addedAt: new Date().toISOString()
         }) as PooledGroup;
-        await setDoc(groupDocRef, pooledData);
+
+        addedList.push(pooledData);
+
+        // Server-side
+        await fetch('/api/ad-network/pooled-groups', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(pooledData)
+        }).catch(() => {});
+
+        // Firestore if authenticated
+        if (auth.currentUser) {
+          try {
+            const groupDocRef = doc(db, 'pooled_groups', safeId);
+            await setDoc(groupDocRef, pooledData);
+          } catch (fsErr) {
+            try {
+              handleFirestoreError(fsErr, OperationType.WRITE, 'pooled_groups');
+            } catch (e) {
+              console.warn('Firestore batch pool sync note:', e);
+            }
+          }
+        }
       }
       setSelectedGroupIds(localGroups.map(g => g.id));
+      setPooledGroups(prev => {
+        const map = new Map<string, PooledGroup>();
+        prev.forEach(g => map.set(g.id, g));
+        addedList.forEach(g => map.set(g.id, g));
+        return Array.from(map.values());
+      });
       setFeedbackMsg({ type: 'success', text: `✓ Successfully opted-in all ${localGroups.length} groups to automated ad network!` });
     } catch (err) {
       console.error('Error batch pooling groups:', err);
@@ -300,14 +407,22 @@ export const AdNetworkTab: React.FC<AdNetworkTabProps> = ({
 
       const data = await res.json();
       if (res.ok && data.success) {
-        // Update advert delivery count in Firestore
-        try {
-          const advertRef = doc(db, 'adverts', advert.id);
-          await updateDoc(advertRef, {
-            deliveredGroupsCount: (advert.deliveredGroupsCount || 0) + targetGroupJids.length,
-            status: 'active'
-          });
-        } catch (e) {}
+        // Update advert delivery count in Firestore if authenticated
+        if (auth.currentUser) {
+          try {
+            const advertRef = doc(db, 'adverts', advert.id);
+            await updateDoc(advertRef, {
+              deliveredGroupsCount: (advert.deliveredGroupsCount || 0) + targetGroupJids.length,
+              status: 'active'
+            });
+          } catch (e) {
+            try {
+              handleFirestoreError(e, OperationType.UPDATE, 'adverts');
+            } catch (fsErr) {
+              console.warn('Firestore update advert note:', fsErr);
+            }
+          }
+        }
 
         setFeedbackMsg({
           type: 'success',
@@ -328,10 +443,26 @@ export const AdNetworkTab: React.FC<AdNetworkTabProps> = ({
   const handleDeleteAdvert = async (advertId: string) => {
     if (!confirm('Are you sure you want to delete this advert campaign?')) return;
     try {
-      await deleteDoc(doc(db, 'adverts', advertId));
+      // 1. Server-side deletion
+      await fetch(`/api/ad-network/adverts/${encodeURIComponent(advertId)}`, { method: 'DELETE' }).catch(() => {});
+      setAdverts(prev => prev.filter(a => a.id !== advertId));
+      
+      // 2. Firestore deletion if authenticated
+      if (auth.currentUser) {
+        try {
+          await deleteDoc(doc(db, 'adverts', advertId));
+        } catch (fsErr) {
+          try {
+            handleFirestoreError(fsErr, OperationType.DELETE, 'adverts');
+          } catch (e) {
+            console.warn('Firestore advert deletion note:', e);
+          }
+        }
+      }
+
       setFeedbackMsg({ type: 'success', text: 'Advert campaign removed.' });
     } catch (e: any) {
-      setFeedbackMsg({ type: 'error', text: e.message });
+      setFeedbackMsg({ type: 'error', text: e.message || 'Failed to remove advert.' });
     }
   };
 

@@ -100,7 +100,7 @@
     },
     "/admins/{adminId}": {
       "schema": "AdminRecord",
-      "description": "Admin authorization table containing bethelgoodgift3@gmail.com"
+      "description": "Admin authorization table containing bethelmbaneto@gmail.com and bethelgoodgift3@gmail.com"
     },
     "/instances/{instanceId}": {
       "schema": "ConnectedInstance",

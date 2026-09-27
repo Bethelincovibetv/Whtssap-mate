@@ -105,11 +105,15 @@ export async function testFirestoreConnection() {
 }
 
 // Designate Admin helper
-export const ADMIN_EMAIL = 'bethelgoodgift3@gmail.com';
+export const ADMIN_EMAILS = [
+  'bethelmbaneto@gmail.com',
+  'bethelgoodgift3@gmail.com'
+];
+export const ADMIN_EMAIL = 'bethelmbaneto@gmail.com';
 
 export function isUserAdmin(user: User | null): boolean {
   if (!user || !user.email) return false;
-  return user.email.toLowerCase() === ADMIN_EMAIL.toLowerCase();
+  return ADMIN_EMAILS.some(adminEmail => adminEmail.toLowerCase() === user.email?.toLowerCase());
 }
 
 // Sign In with Google popup
@@ -135,7 +139,11 @@ export async function loginWithGoogle() {
       updatedAt: new Date().toISOString()
     });
 
-    await setDoc(userRef, userProfileData, { merge: true });
+    try {
+      await setDoc(userRef, userProfileData, { merge: true });
+    } catch (fsErr) {
+      handleFirestoreError(fsErr, OperationType.WRITE, 'users');
+    }
 
     // Ensure Admin Record exists if this is the target admin email
     if (isAdmin) {
@@ -151,8 +159,13 @@ export async function loginWithGoogle() {
     }
 
     return user;
-  } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, 'users');
+  } catch (error: any) {
+    if (error?.code === 'auth/unauthorized-domain') {
+      console.warn('Firebase Auth: Current domain is not in Authorized Domains list in Firebase Console.', window.location.hostname);
+    } else if (error?.code === 'auth/popup-closed-by-user') {
+      console.info('Sign-in popup closed by user.');
+    }
+    throw error;
   }
 }
 
