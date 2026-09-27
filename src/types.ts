@@ -1,31 +1,16 @@
 export interface EngineStats {
   statusesViewed: number;
   reactionsSent: number;
-  aiRepliesSent: number;
   broadcastsSent: number;
   campaignMessagesSent: number;
   startedAt: string;
-}
-
-export interface FallbackRule {
-  id: string;
-  keywords: string[];
-  reply: string;
-  enabled: boolean;
 }
 
 export interface EngineConfig {
   autoView: boolean;
   autoReact: boolean;
   reactionEmojis: string[];
-  aiResponder: boolean;
-  aiTriggerMode: 'all' | 'keywords_only';
-  triggerKeywords: string[];
-  systemPrompt: string;
-  geminiKey: string;
   viewDelaySeconds: number;
-  typingDelaySeconds: number;
-  fallbackRules: FallbackRule[];
 }
 
 export interface ActivityLog {
@@ -33,8 +18,22 @@ export interface ActivityLog {
   timestamp: string;
   message: string;
   type: 'info' | 'event' | 'success' | 'warn' | 'error';
-  category?: 'status' | 'group' | 'campaign' | 'ai' | 'system';
+  category?: 'status' | 'group' | 'campaign' | 'broadcast' | 'system';
   metadata?: any;
+}
+
+export interface BroadcastHistoryItem {
+  id: string;
+  timestamp: string;
+  type: 'text' | 'image' | 'video';
+  text: string;
+  mediaUrl?: string;
+  backgroundColor?: string;
+  font?: number;
+  recipientsCount: number;
+  accountId?: string;
+  accountLabel?: string;
+  success: boolean;
 }
 
 export interface ViewedStatusItem {
@@ -151,14 +150,8 @@ export interface EngineStatusResponse {
   qr: string | null;
   autoReact: boolean;
   autoView: boolean;
-  aiResponder: boolean;
-  aiTriggerMode?: 'all' | 'keywords_only';
-  triggerKeywords?: string[];
   reactionEmojis: string[];
-  systemPrompt: string;
   viewDelaySeconds?: number;
-  typingDelaySeconds?: number;
-  fallbackRules?: FallbackRule[];
   stats: EngineStats;
   campaign?: CampaignProgress;
   activeAccountId?: string;

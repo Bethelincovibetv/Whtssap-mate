@@ -27,7 +27,7 @@ import { EngineStatusResponse } from '../types';
 import { isUserAdmin, ADMIN_EMAIL } from '../lib/firebase';
 import { AccountSwitcher } from './AccountSwitcher';
 
-export type NavTabId = 'landing' | 'ad-network' | 'connect' | 'api-keys' | 'groups' | 'campaign' | 'broadcast' | 'visibility' | 'ai' | 'logs' | 'deploy';
+export type NavTabId = 'landing' | 'ad-network' | 'connect' | 'api-keys' | 'groups' | 'campaign' | 'broadcast' | 'visibility' | 'logs' | 'deploy';
 
 interface SidebarProps {
   activeTab: NavTabId;
@@ -120,7 +120,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
     },
     { id: 'broadcast' as NavTabId, label: 'Story Broadcast', icon: Send, desc: 'Post stories to all contacts' },
     { id: 'visibility' as NavTabId, label: 'Story Viewer & Reacts', icon: Eye, desc: 'Auto-view & instant emoji reacts' },
-    { id: 'ai' as NavTabId, label: 'AI Auto-Responder', icon: Bot, desc: 'Gemini AI & keyword fallbacks' },
     { id: 'logs' as NavTabId, label: 'Audit Logs', icon: Terminal, desc: 'Real-time telemetry & events', count: logsCount },
     { id: 'deploy' as NavTabId, label: 'Render Deploy', icon: CloudUpload, desc: '24/7 cloud hosting guide' },
   ];
@@ -271,9 +270,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <p className="text-[10px] text-emerald-400 font-mono font-bold leading-none">{stats.campaignMessagesSent}</p>
               <p className="text-[8px] text-slate-500 uppercase mt-0.5">Groups</p>
             </div>
-            <div className="bg-[#111b21] p-1 rounded-md border border-[#202c33]/70" title="AI Replies">
-              <p className="text-[10px] text-purple-400 font-mono font-bold leading-none">{stats.aiRepliesSent}</p>
-              <p className="text-[8px] text-slate-500 uppercase mt-0.5">AI</p>
+            <div className="bg-[#111b21] p-1 rounded-md border border-[#202c33]/70" title="Stories Broadcasted">
+              <p className="text-[10px] text-purple-400 font-mono font-bold leading-none">{stats.broadcastsSent}</p>
+              <p className="text-[8px] text-slate-500 uppercase mt-0.5">Stories</p>
             </div>
           </div>
 

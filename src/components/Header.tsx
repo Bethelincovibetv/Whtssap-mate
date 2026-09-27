@@ -49,7 +49,6 @@ const TAB_TITLES: Record<NavTabId, { title: string; subtitle: string; icon: any 
   campaign: { title: 'Campaign Engine', subtitle: 'Automated multi-group message dispatch', icon: Rocket },
   broadcast: { title: 'Story Broadcast', subtitle: 'Publish status updates to all contacts', icon: Send },
   visibility: { title: 'Story Viewer & Reacts', subtitle: 'Auto-view contact stories & send reactions', icon: Eye },
-  ai: { title: 'AI Auto-Responder', subtitle: 'Powered by Google Gemini 2.5 Flash', icon: Bot },
   logs: { title: 'Audit Logs & Telemetry', subtitle: 'Real-time WebSocket & event stream', icon: Terminal },
   deploy: { title: 'Render Deployment', subtitle: 'Deploy 24/7 cloud instance with free tier', icon: CloudUpload },
 };

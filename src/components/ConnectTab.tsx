@@ -789,12 +789,12 @@ export const ConnectTab: React.FC<ConnectTabProps> = ({
 
         <div className="p-4 rounded-xl bg-[#111b21] border border-[#202c33] flex items-start gap-3">
           <div className="w-8 h-8 rounded-lg bg-purple-500/10 text-purple-400 flex items-center justify-center shrink-0">
-            🤖
+            📢
           </div>
           <div>
-            <h4 className="text-xs font-bold text-white">Gemini AI Auto-Reply</h4>
+            <h4 className="text-xs font-bold text-white">Story Broadcast Engine</h4>
             <p className="text-[11px] text-slate-400 mt-0.5">
-              24/7 autonomous sales rep answering questions and booking leads in direct messages.
+              Publish high-converting photo & text stories broadcasted instantly to all your saved WhatsApp contacts.
             </p>
           </div>
         </div>

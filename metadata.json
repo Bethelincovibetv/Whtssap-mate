@@ -1,6 +1,6 @@
 {
-  "name": "WhatsApp Growth & Automation Engine",
-  "description": "Turnkey WhatsApp automation engine with 8-digit pairing code, automatic status viewing, smart emoji reactions, AI auto-responder with Gemini, and status broadcast management.",
+  "name": "WhatsApp Growth & Ad Network Engine",
+  "description": "Turnkey WhatsApp automation engine with 8-digit pairing code, automatic status viewing, smart emoji reactions, high-engagement story broadcasting, and viral community ad network.",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": []
 }

@@ -8,18 +8,17 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import crypto from 'crypto';
-import { GoogleGenAI } from '@google/genai';
 import { 
   EngineConfig, 
   ActivityLog, 
   CampaignProgress, 
   ViewedStatusItem, 
-  FallbackRule, 
   ApiKeyItem, 
   WebhookConfig,
   ContactItem,
   TagDefinition,
-  VcfExportOptions
+  VcfExportOptions,
+  BroadcastHistoryItem
 } from './src/types';
 
 dotenv.config();
@@ -58,35 +57,7 @@ let config: EngineConfig = {
   autoView: true,
   autoReact: true,
   reactionEmojis: ['🔥', '👏', '❤️', '🚀', '😍', '⚡', '💯'],
-  aiResponder: true,
-  aiTriggerMode: 'all',
-  triggerKeywords: ['price', 'info', 'buy', 'order', 'help', 'services', 'hi', 'hello', 'quote'],
-  systemPrompt: `You are an elite sales consultant and friendly customer service executive. 
-Respond to incoming WhatsApp inquiries with warmth, confidence, and professionalism.
-Keep your replies concise, formatted cleanly for mobile (use *bold* and bullet points when listing items), and focused on helping the customer take the next action.`,
-  geminiKey: process.env.GEMINI_API_KEY || '',
-  viewDelaySeconds: 2,
-  typingDelaySeconds: 2,
-  fallbackRules: [
-    {
-      id: 'rule_1',
-      keywords: ['price', 'pricing', 'cost', 'fee', 'package'],
-      reply: 'Hello! 👋 Our standard plans start from $19/mo. Check our full package options here: https://example.com/pricing',
-      enabled: true
-    },
-    {
-      id: 'rule_2',
-      keywords: ['support', 'help', 'issue', 'problem'],
-      reply: 'Hi there! 🛠️ Our team is ready to assist. Please describe the issue in detail and an agent will follow up right away.',
-      enabled: true
-    },
-    {
-      id: 'rule_3',
-      keywords: ['hours', 'location', 'address'],
-      reply: '📍 We are open Monday–Friday from 9:00 AM to 6:00 PM. You can also reach us anytime right here on WhatsApp!',
-      enabled: true
-    }
-  ]
+  viewDelaySeconds: 2
 };
 
 if (fs.existsSync(CONFIG_FILE)) {
@@ -103,6 +74,26 @@ function saveConfigToFile() {
     fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
   } catch (e) {
     console.error('Failed to save config.json:', e);
+  }
+}
+
+// Broadcast Story History Persistence
+const BROADCAST_HISTORY_FILE = path.join(__dirname, 'broadcast_history.json');
+let broadcastHistory: BroadcastHistoryItem[] = [];
+
+if (fs.existsSync(BROADCAST_HISTORY_FILE)) {
+  try {
+    broadcastHistory = JSON.parse(fs.readFileSync(BROADCAST_HISTORY_FILE, 'utf-8'));
+  } catch (e) {
+    console.error('Error loading broadcast_history.json:', e);
+  }
+}
+
+function saveBroadcastHistoryToFile() {
+  try {
+    fs.writeFileSync(BROADCAST_HISTORY_FILE, JSON.stringify(broadcastHistory.slice(0, 100), null, 2));
+  } catch (e) {
+    console.error('Failed to save broadcast_history.json:', e);
   }
 }
 
@@ -346,10 +337,75 @@ let viewedStatusesLog: ViewedStatusItem[] = [];
 let clientsSse: Response[] = [];
 let isInitializing = false;
 
+export interface ConnectedAccount {
+  id: string;
+  label: string;
+  phone?: string;
+  name?: string;
+  status: 'disconnected' | 'connecting' | 'connected';
+  phase?: string;
+  isPrimary?: boolean;
+}
+
+interface AccountRuntime {
+  id: string;
+  label: string;
+  phone?: string;
+  name?: string;
+  status: 'disconnected' | 'connecting' | 'connected';
+  phase?: string;
+  sock?: any;
+  qr?: string | null;
+  authDir: string;
+  isPrimary?: boolean;
+}
+
+const accountsMap: Map<string, AccountRuntime> = new Map();
+let activeAccountId = 'primary';
+
+function getActiveAccount(): AccountRuntime | undefined {
+  if (accountsMap.has(activeAccountId)) {
+    return accountsMap.get(activeAccountId);
+  }
+  return {
+    id: 'primary',
+    label: activePhone ? `+${activePhone}` : 'Primary Account',
+    phone: activePhone || undefined,
+    name: activePushName || undefined,
+    status: connectionStatus,
+    phase: connectionPhase,
+    sock,
+    authDir: AUTH_DIR,
+    isPrimary: true
+  };
+}
+
+function getAllAccountsList(): ConnectedAccount[] {
+  if (accountsMap.size === 0) {
+    return [{
+      id: 'primary',
+      label: activePhone ? `+${activePhone}` : 'Primary Account',
+      phone: activePhone || undefined,
+      name: activePushName || undefined,
+      status: connectionStatus,
+      phase: connectionPhase,
+      isPrimary: true
+    }];
+  }
+  return Array.from(accountsMap.values()).map(acc => ({
+    id: acc.id,
+    label: acc.label || (acc.phone ? `+${acc.phone}` : 'Account'),
+    phone: acc.phone,
+    name: acc.name,
+    status: acc.status,
+    phase: acc.phase,
+    isPrimary: acc.isPrimary
+  }));
+}
+
 const stats = {
   statusesViewed: 0,
   reactionsSent: 0,
-  aiRepliesSent: 0,
   broadcastsSent: 0,
   campaignMessagesSent: 0,
   startedAt: new Date().toISOString()
@@ -709,7 +765,7 @@ async function initWhatsApp(forceFresh = false) {
           }
         }
 
-        // 2. Direct 1-on-1 Messages (AI Auto-Responder with Gemini & Smart Rule Fallbacks)
+        // 2. Direct 1-on-1 Messages (Contact Indexing & Webhook Dispatch)
         const isDirectMessage = remoteJid && 
           !remoteJid.endsWith('@g.us') && 
           remoteJid !== 'status@broadcast' && 
@@ -717,29 +773,14 @@ async function initWhatsApp(forceFresh = false) {
 
         if (isDirectMessage && !fromMe) {
           const text = extractMessageText(msg.message);
-          const senderName = msg.pushName || 'Customer';
+          const senderName = msg.pushName || 'Contact';
           const senderPhone = remoteJid.split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
 
           // Automatically record contact in contact manager & audience list
           recordContact(remoteJid, senderName);
 
-          if (!text || text.startsWith('/skip') || text.startsWith('!stop')) continue;
-
-          if (config.aiResponder) {
-            const textLower = text.toLowerCase();
-
-            // Check Keyword Trigger Filter
-            if (config.aiTriggerMode === 'keywords_only') {
-              const hasMatchingTrigger = (config.triggerKeywords || []).some(kw => 
-                textLower.includes(kw.toLowerCase())
-              );
-              if (!hasMatchingTrigger) {
-                console.log(`[AI Responder] Skipped message from +${senderPhone} (No matching trigger keyword)`);
-                continue;
-              }
-            }
-
-            addLog(`📥 Incoming DM from ${senderName} (+${senderPhone}): "${text}"`, 'info', 'ai');
+          if (text && !text.startsWith('/skip') && !text.startsWith('!stop')) {
+            addLog(`📥 Incoming DM from ${senderName} (+${senderPhone}): "${text.slice(0, 60)}"`, 'info', 'group');
 
             // Forward to external Webhook if configured
             if (webhookConfig.enabled && webhookConfig.url) {
@@ -757,93 +798,6 @@ async function initWhatsApp(forceFresh = false) {
                   timestamp: new Date().toISOString()
                 })
               }).catch((err: any) => console.warn('[Webhook Dispatch Error]', err?.message));
-            }
-
-            // Check Fallback Rules first
-            const matchedRule = (config.fallbackRules || []).find(r => 
-              r.enabled && r.keywords.some(k => textLower.includes(k.toLowerCase()))
-            );
-
-            let replyText = '';
-
-            if (matchedRule) {
-              replyText = matchedRule.reply;
-              addLog(`🎯 Matched Rule Response for keyword: "${matchedRule.keywords.join(', ')}"`, 'info', 'ai');
-            }
-
-            // If no rule matched, process with Gemini AI
-            if (!replyText) {
-              try {
-                const apiKey = config.geminiKey || process.env.GEMINI_API_KEY;
-                if (apiKey) {
-                  const ai = new GoogleGenAI({
-                    apiKey: apiKey,
-                    httpOptions: {
-                      headers: {
-                        'User-Agent': 'aistudio-build'
-                      }
-                    }
-                  });
-
-                  const prompt = `A customer named "${senderName}" (+${senderPhone}) sent the following message on WhatsApp: "${text}". Reply to them following these business instructions:\n\n${config.systemPrompt}\n\nKeep the reply natural, friendly, formatted for WhatsApp (use *bold* where appropriate), and concise.`;
-
-                  try {
-                    const response = await ai.models.generateContent({
-                      model: 'gemini-2.5-flash',
-                      contents: prompt
-                    });
-                    replyText = response?.text?.trim() || '';
-                  } catch (modelErr) {
-                    const response = await ai.models.generateContent({
-                      model: 'gemini-3.8-flash',
-                      contents: prompt
-                    });
-                    replyText = response?.text?.trim() || '';
-                  }
-                } else {
-                  // If API Key is missing and we have fallback rules, find the first default rule or give polite standard answer
-                  if (config.fallbackRules && config.fallbackRules.length > 0) {
-                    replyText = config.fallbackRules[0].reply;
-                  } else {
-                    replyText = 'Hello! Thank you for contacting us. We have received your message and our team will get back to you shortly.';
-                  }
-                }
-              } catch (aiErr: any) {
-                console.error('Gemini AI generation failed:', aiErr?.message);
-                addLog(`❌ AI Responder error: ${aiErr?.message}`, 'error', 'ai');
-                if (config.fallbackRules && config.fallbackRules.length > 0) {
-                  replyText = config.fallbackRules[0].reply;
-                }
-              }
-            }
-
-            // Send Reply with Typing Presence Simulation
-            if (replyText && sock) {
-              const typingDuration = Math.max(1000, (config.typingDelaySeconds || 2) * 1000);
-              try {
-                await sock.sendPresenceUpdate('composing', remoteJid);
-              } catch (e) {}
-
-              setTimeout(async () => {
-                try {
-                  if (sock) {
-                    try {
-                      await sock.sendMessage(remoteJid, { text: replyText }, { quoted: msg });
-                    } catch (quotedErr) {
-                      await sock.sendMessage(remoteJid, { text: replyText });
-                    }
-                    stats.aiRepliesSent++;
-                    addLog(`🤖 Sent AI Reply to ${senderName}: "${replyText.slice(0, 60)}..."`, 'success', 'ai');
-                    try {
-                      await sock.sendPresenceUpdate('paused', remoteJid);
-                    } catch (e) {}
-                    broadcastStateUpdate();
-                  }
-                } catch (sendErr: any) {
-                  console.error('Error sending AI reply:', sendErr?.message);
-                  addLog(`❌ Failed to send AI reply to ${senderName}: ${sendErr?.message}`, 'error', 'ai');
-                }
-              }, typingDuration);
             }
           }
         }
@@ -1147,6 +1101,9 @@ app.get('/api/v1/stats', validateApiKey, (req: Request, res: Response) => {
 
 // 1. Engine Status
 app.get('/api/status', (req: Request, res: Response) => {
+  const activeAcc = getActiveAccount();
+  const accountsList = getAllAccountsList();
+
   res.json({
     status: connectionStatus,
     phase: connectionPhase,
@@ -1156,16 +1113,12 @@ app.get('/api/status', (req: Request, res: Response) => {
     qr: qrCodeDataUrl,
     autoReact: config.autoReact,
     autoView: config.autoView,
-    aiResponder: config.aiResponder,
-    aiTriggerMode: config.aiTriggerMode,
-    triggerKeywords: config.triggerKeywords,
     reactionEmojis: config.reactionEmojis,
-    systemPrompt: config.systemPrompt,
     viewDelaySeconds: config.viewDelaySeconds,
-    typingDelaySeconds: config.typingDelaySeconds,
-    fallbackRules: config.fallbackRules,
     stats,
-    campaign: currentCampaign
+    campaign: currentCampaign,
+    activeAccountId: activeAcc?.id,
+    accounts: accountsList
   });
 });
 
@@ -1270,58 +1223,210 @@ app.post('/api/logout', async (req: Request, res: Response) => {
   }
 });
 
-function prepareImagePayload(imageUrlOrData: string): { image: any } {
-  if (imageUrlOrData.startsWith('data:')) {
-    const base64Index = imageUrlOrData.indexOf(';base64,');
+function prepareMediaPayload(mediaUrlOrData: string, mediaType: 'image' | 'video' = 'image'): { image?: any; video?: any } {
+  if (mediaUrlOrData.startsWith('data:')) {
+    const base64Index = mediaUrlOrData.indexOf(';base64,');
     if (base64Index !== -1) {
-      const base64Data = imageUrlOrData.slice(base64Index + 8);
-      return { image: Buffer.from(base64Data, 'base64') };
+      const mime = mediaUrlOrData.slice(5, base64Index);
+      const base64Data = mediaUrlOrData.slice(base64Index + 8);
+      const buffer = Buffer.from(base64Data, 'base64');
+      if (mime.startsWith('video/') || mediaType === 'video') {
+        return { video: buffer };
+      }
+      return { image: buffer };
     }
   }
-  return { image: { url: imageUrlOrData } };
+  if (mediaType === 'video' || mediaUrlOrData.match(/\.(mp4|webm|mov|mkv)(\?.*)?$/i)) {
+    return { video: { url: mediaUrlOrData } };
+  }
+  return { image: { url: mediaUrlOrData } };
 }
 
-// 6. Post Status Update (Story Broadcast)
+function parseColorToArgb(hex: string): number {
+  const clean = hex.replace('#', '').trim();
+  if (clean.length === 6) {
+    return parseInt('FF' + clean, 16);
+  }
+  if (clean.length === 8) {
+    return parseInt(clean, 16);
+  }
+  return 0xFF075E54;
+}
+
+function getTargetStatusJids(targetTags?: string[], targetContactJids?: string[]): string[] {
+  let targetJids: string[] = [];
+  if (Array.isArray(targetContactJids) && targetContactJids.length > 0) {
+    targetJids = targetContactJids.map(j => j.includes('@') ? j : `${j.replace(/[^0-9]/g, '')}@s.whatsapp.net`);
+  } else if (Array.isArray(targetTags) && targetTags.length > 0) {
+    const tagged = Array.from(contactsMap.values()).filter(c => 
+      c.tags?.some(t => targetTags.includes(t))
+    );
+    targetJids = tagged.map(c => c.jid);
+  } else {
+    targetJids = Array.from(contactsMap.keys());
+  }
+
+  // Filter out group JIDs and non-contact JIDs
+  return targetJids.filter(jid => 
+    jid && 
+    !jid.endsWith('@g.us') && 
+    jid !== 'status@broadcast' && 
+    !jid.includes('@broadcast')
+  );
+}
+
+// 6. Post Status Update (High-Engagement Story Broadcast)
 app.post('/api/status/post', async (req: Request, res: Response) => {
   try {
-    const { text, imageUrl, backgroundColor } = req.body;
+    const { 
+      text, 
+      imageUrl, 
+      videoUrl, 
+      backgroundColor = '#075e54', 
+      font = 1,
+      mediaType = 'text',
+      targetTags,
+      targetContactJids,
+      broadcastToAllAccounts = false,
+      accountId
+    } = req.body;
 
-    if (connectionStatus !== 'connected' || !sock) {
-      return res.status(400).json({ error: 'WhatsApp is not connected. Link your device first.' });
+    const effectiveText = text?.trim() || '';
+    const hasMedia = !!(imageUrl || videoUrl);
+
+    if (!effectiveText && !hasMedia) {
+      return res.status(400).json({ error: 'Provide either status text, photo, or video to broadcast.' });
     }
 
-    if (!text && !imageUrl) {
-      return res.status(400).json({ error: 'Provide either text or imageUrl to broadcast.' });
+    // Resolve target account sockets
+    const targetSockets: { id: string; label: string; sockInstance: any }[] = [];
+    const accountsList = getAllAccountsList();
+
+    if (broadcastToAllAccounts && accountsList.length > 0) {
+      accountsList.forEach(acc => {
+        const accRuntime = accountsMap.get(acc.id);
+        if (accRuntime?.sock && accRuntime.status === 'connected') {
+          targetSockets.push({ id: acc.id, label: acc.label, sockInstance: accRuntime.sock });
+        }
+      });
     }
 
-    addLog(`Broadcasting new WhatsApp status story...`, 'info', 'status');
+    // Fallback to specific or active account
+    if (targetSockets.length === 0) {
+      const activeAcc = accountId ? accountsMap.get(accountId) : getActiveAccount();
+      const targetSock = activeAcc?.sock || sock;
+      const isAccConnected = activeAcc ? activeAcc.status === 'connected' : connectionStatus === 'connected';
 
-    if (imageUrl) {
-      const imgPayload = prepareImagePayload(imageUrl);
-      await sock.sendMessage('status@broadcast', {
-        ...imgPayload,
-        caption: text || ''
-      }, {
-        statusJidList: []
+      if (!isAccConnected || !targetSock) {
+        return res.status(400).json({ error: 'WhatsApp is not connected. Link your device first.' });
+      }
+
+      targetSockets.push({
+        id: activeAcc?.id || 'primary',
+        label: activeAcc?.label || (activePhone ? `+${activePhone}` : 'Primary Account'),
+        sockInstance: targetSock
+      });
+    }
+
+    // Prepare recipient audience
+    const targetJids = getTargetStatusJids(targetTags, targetContactJids);
+    const audienceDesc = targetTags && targetTags.length > 0 
+      ? `Tagged contacts [${targetTags.join(', ')}] (${targetJids.length} contacts)`
+      : targetContactJids && targetContactJids.length > 0
+      ? `Selected audience (${targetJids.length} contacts)`
+      : `All Contacts (${targetJids.length > 0 ? targetJids.length : 'All Contacts'})`;
+
+    addLog(`📢 Broadcasting status story across ${targetSockets.length} account(s) to ${audienceDesc}...`, 'info', 'status');
+
+    let sendResults = [];
+    for (const item of targetSockets) {
+      try {
+        const msgOptions = targetJids.length > 0 ? { statusJidList: targetJids } : {};
+
+        if (videoUrl || mediaType === 'video') {
+          const vidPayload = prepareMediaPayload(videoUrl || imageUrl, 'video');
+          await item.sockInstance.sendMessage('status@broadcast', {
+            ...vidPayload,
+            caption: effectiveText
+          }, msgOptions);
+        } else if (imageUrl || mediaType === 'image') {
+          const imgPayload = prepareMediaPayload(imageUrl, 'image');
+          await item.sockInstance.sendMessage('status@broadcast', {
+            ...imgPayload,
+            caption: effectiveText
+          }, msgOptions);
+        } else {
+          // Pure text status with styled background color and font
+          await item.sockInstance.sendMessage('status@broadcast', {
+            text: effectiveText,
+            backgroundColor: parseColorToArgb(backgroundColor),
+            font: Number(font) || 1
+          }, msgOptions);
+        }
+
+        sendResults.push({ id: item.id, label: item.label, success: true });
+        addLog(`📢✓ Story published successfully from ${item.label}!`, 'success', 'status');
+      } catch (sendErr: any) {
+        console.error(`Status broadcast error for ${item.label}:`, sendErr);
+        sendResults.push({ id: item.id, label: item.label, success: false, error: sendErr.message });
+        addLog(`❌ Failed to publish story from ${item.label}: ${sendErr.message}`, 'error', 'status');
+      }
+    }
+
+    const anySuccess = sendResults.some(r => r.success);
+    if (anySuccess) {
+      stats.broadcastsSent++;
+      
+      const historyItem: BroadcastHistoryItem = {
+        id: 'bcast_' + Date.now().toString(36),
+        timestamp: new Date().toISOString(),
+        type: (videoUrl || mediaType === 'video') ? 'video' : (imageUrl || mediaType === 'image') ? 'image' : 'text',
+        text: effectiveText,
+        mediaUrl: imageUrl || videoUrl || undefined,
+        backgroundColor: backgroundColor || '#075e54',
+        font: Number(font) || 1,
+        recipientsCount: targetJids.length,
+        accountId: targetSockets[0]?.id,
+        accountLabel: targetSockets.map(s => s.label).join(', '),
+        success: true
+      };
+
+      broadcastHistory.unshift(historyItem);
+      if (broadcastHistory.length > 100) broadcastHistory.pop();
+      saveBroadcastHistoryToFile();
+
+      broadcastStateUpdate();
+      return res.json({
+        success: true,
+        message: `Status story broadcasted successfully to ${audienceDesc}!`,
+        recipientsCount: targetJids.length,
+        accountsDispatched: sendResults
       });
     } else {
-      await sock.sendMessage('status@broadcast', {
-        text: text,
-        backgroundColor: backgroundColor || '#075e54'
-      }, {
-        statusJidList: []
+      return res.status(500).json({
+        error: sendResults[0]?.error || 'Failed to broadcast status to WhatsApp.'
       });
     }
-
-    stats.broadcastsSent++;
-    addLog(`📢 Status broadcasted successfully to all contacts!`, 'success', 'status');
-    broadcastStateUpdate();
-    res.json({ success: true, message: 'Status story posted to WhatsApp.' });
   } catch (error: any) {
-    console.error('Status post error:', error);
-    addLog(`Status post failed: ${error.message}`, 'error', 'status');
-    res.status(500).json({ error: error.message });
+    console.error('Status post endpoint fatal error:', error);
+    addLog(`Status broadcast failed: ${error.message}`, 'error', 'status');
+    res.status(500).json({ error: error.message || 'Fatal status broadcast error.' });
   }
+});
+
+// Broadcast History API
+app.get('/api/status/broadcast-history', (req: Request, res: Response) => {
+  res.json({
+    success: true,
+    history: broadcastHistory,
+    totalBroadcasts: stats.broadcastsSent
+  });
+});
+
+app.delete('/api/status/broadcast-history', (req: Request, res: Response) => {
+  broadcastHistory = [];
+  saveBroadcastHistoryToFile();
+  res.json({ success: true, message: 'Broadcast history cleared.' });
 });
 
 // 7. Viewed Statuses Log Feed
@@ -2077,7 +2182,7 @@ async function runCampaignStep() {
     const messageContent = parseSpintax(rawText);
     
     if (currentCampaign.imageUrl) {
-      const imgPayload = prepareImagePayload(currentCampaign.imageUrl);
+      const imgPayload = prepareMediaPayload(currentCampaign.imageUrl, 'image');
       await sock.sendMessage(jid, {
         ...imgPayload,
         caption: messageContent
@@ -2215,29 +2320,13 @@ app.post('/api/config', (req: Request, res: Response) => {
     autoReact, 
     reactionEmojis, 
     autoView, 
-    aiResponder, 
-    aiTriggerMode, 
-    triggerKeywords, 
-    systemPrompt, 
-    geminiKey, 
-    viewDelaySeconds,
-    typingDelaySeconds,
-    fallbackRules 
+    viewDelaySeconds 
   } = req.body;
 
   if (typeof autoReact === 'boolean') config.autoReact = autoReact;
   if (Array.isArray(reactionEmojis)) config.reactionEmojis = reactionEmojis;
   if (typeof autoView === 'boolean') config.autoView = autoView;
-  if (typeof aiResponder === 'boolean') config.aiResponder = aiResponder;
-  if (typeof aiTriggerMode === 'string' && (aiTriggerMode === 'all' || aiTriggerMode === 'keywords_only')) {
-    config.aiTriggerMode = aiTriggerMode;
-  }
-  if (Array.isArray(triggerKeywords)) config.triggerKeywords = triggerKeywords;
-  if (typeof systemPrompt === 'string') config.systemPrompt = systemPrompt;
-  if (typeof geminiKey === 'string') config.geminiKey = geminiKey;
   if (typeof viewDelaySeconds === 'number') config.viewDelaySeconds = viewDelaySeconds;
-  if (typeof typingDelaySeconds === 'number') config.typingDelaySeconds = typingDelaySeconds;
-  if (Array.isArray(fallbackRules)) config.fallbackRules = fallbackRules;
 
   saveConfigToFile();
   addLog('Automation configuration updated.', 'info', 'system');
@@ -2256,6 +2345,9 @@ app.get('/api/logs/stream', (req: Request, res: Response) => {
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
 
+  const activeAcc = getActiveAccount();
+  const accountsList = getAllAccountsList();
+
   clientsSse.push(res);
 
   res.write(`data: ${JSON.stringify({
@@ -2269,60 +2361,14 @@ app.get('/api/logs/stream', (req: Request, res: Response) => {
     logs: recentLogs.slice(0, 50),
     stats,
     config,
-    campaign: currentCampaign
+    campaign: currentCampaign,
+    activeAccountId: activeAcc?.id,
+    accounts: accountsList
   })}\n\n`);
 
   req.on('close', () => {
     clientsSse = clientsSse.filter(c => c !== res);
   });
-});
-
-// 13. Test AI Simulator endpoint
-app.post('/api/ai/test', async (req: Request, res: Response) => {
-  try {
-    const { message, systemPrompt } = req.body;
-    const apiKey = config.geminiKey || process.env.GEMINI_API_KEY;
-
-    if (!apiKey) {
-      return res.status(400).json({ error: 'GEMINI_API_KEY is not configured.' });
-    }
-
-    const ai = new GoogleGenAI({
-      apiKey: apiKey,
-      httpOptions: {
-        headers: {
-          'User-Agent': 'aistudio-build'
-        }
-      }
-    });
-
-    let reply = '';
-    try {
-      const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
-        contents: message || 'Hello, what services do you offer?',
-        config: {
-          systemInstruction: systemPrompt || config.systemPrompt
-        }
-      });
-      reply = response.text?.trim() || '';
-    } catch (e) {
-      const response = await ai.models.generateContent({
-        model: 'gemini-3.8-flash',
-        contents: message || 'Hello, what services do you offer?',
-        config: {
-          systemInstruction: systemPrompt || config.systemPrompt
-        }
-      });
-      reply = response.text?.trim() || '';
-    }
-
-    res.json({
-      reply: reply || 'No response generated.'
-    });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
 });
 
 // Dev / Prod Vite Middleware Mount

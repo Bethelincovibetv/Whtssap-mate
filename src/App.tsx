@@ -10,7 +10,6 @@ import { GroupManagerTab } from './components/GroupManagerTab';
 import { CampaignTab } from './components/CampaignTab';
 import { BroadcastTab } from './components/BroadcastTab';
 import { VisibilityTab } from './components/VisibilityTab';
-import { AiResponderTab } from './components/AiResponderTab';
 import { LiveLogsTab } from './components/LiveLogsTab';
 import { RenderDeployTab } from './components/RenderDeployTab';
 import { PwaInstallModal } from './components/PwaInstallModal';
@@ -398,13 +397,6 @@ export default function App() {
 
           {activeTab === 'visibility' && (
             <VisibilityTab
-              statusData={statusData}
-              onRefresh={fetchStatus}
-            />
-          )}
-
-          {activeTab === 'ai' && (
-            <AiResponderTab
               statusData={statusData}
               onRefresh={fetchStatus}
             />

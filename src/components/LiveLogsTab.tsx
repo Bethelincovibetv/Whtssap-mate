@@ -94,7 +94,7 @@ export const LiveLogsTab: React.FC<LiveLogsTabProps> = ({ logs, stats, onClear, 
       
       {/* Live Analytics Dashboard Cards */}
       {stats && (
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
           <div className="p-4 rounded-2xl bg-[#111b21] border border-[#202c33]">
             <div className="flex items-center justify-between mb-1">
               <span className="text-[11px] text-slate-400 font-medium">Stories Viewed</span>
@@ -117,14 +117,6 @@ export const LiveLogsTab: React.FC<LiveLogsTabProps> = ({ logs, stats, onClear, 
               <Users className="w-3.5 h-3.5 text-emerald-400" />
             </div>
             <p className="text-xl font-bold text-emerald-400">{stats.campaignMessagesSent.toLocaleString()}</p>
-          </div>
-
-          <div className="p-4 rounded-2xl bg-[#111b21] border border-[#202c33]">
-            <div className="flex items-center justify-between mb-1">
-              <span className="text-[11px] text-slate-400 font-medium">AI Inbound Replies</span>
-              <Bot className="w-3.5 h-3.5 text-purple-400" />
-            </div>
-            <p className="text-xl font-bold text-purple-400">{stats.aiRepliesSent.toLocaleString()}</p>
           </div>
 
           <div className="p-4 rounded-2xl bg-[#111b21] border border-[#202c33]">
