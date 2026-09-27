@@ -18,7 +18,9 @@ import {
   ContactItem,
   TagDefinition,
   VcfExportOptions,
-  BroadcastHistoryItem
+  BroadcastHistoryItem,
+  ConnectedAccount,
+  EngineStats
 } from './src/types';
 
 dotenv.config();
@@ -30,7 +32,7 @@ process.on('unhandledRejection', (reason) => {
   console.error('[Engine Unhandled Rejection]', reason);
 });
 
-// Defensive Baileys interop
+// Baileys interop
 const baileys: any = (baileysPkg as any).default || baileysPkg;
 const makeWASocket: any = baileys.default || baileys.makeWASocket || baileys;
 const DisconnectReason = baileys.DisconnectReason || (baileysPkg as any).DisconnectReason || { loggedOut: 401 };
@@ -344,93 +346,171 @@ export function buildVcfContent(contacts: { phone: string; name: string; org?: s
   return vcf;
 }
 
-let keepAliveTimer: NodeJS.Timeout | null = null;
-let reconnectAttemptCount = 0;
-
-function startKeepAliveLoop() {
-  if (keepAliveTimer) clearInterval(keepAliveTimer);
-  keepAliveTimer = setInterval(async () => {
-    try {
-      if (sock && connectionStatus === 'connected') {
-        // Send presence update to keep WhatsApp Web session active
-        await sock.sendPresenceUpdate('available').catch(() => {});
-        if (sock.ws && typeof sock.ws.ping === 'function') {
-          try { sock.ws.ping(); } catch (e) {}
-        }
-      }
-    } catch (err: any) {
-      // Quiet background keep-alive ping
-    }
-  }, 25000);
-}
-
-
-let sock: any = null;
-let connectionStatus: 'disconnected' | 'connecting' | 'connected' = 'disconnected';
-let connectionPhase: string = 'idle';
-let qrCodeDataUrl: string | null = null;
-let activePhone: string | null = null;
-let activePushName: string | null = null;
 let recentLogs: ActivityLog[] = [];
 let viewedStatusesLog: ViewedStatusItem[] = [];
 let clientsSse: Response[] = [];
-let isInitializing = false;
 
-export interface ConnectedAccount {
+const globalStats: EngineStats = {
+  statusesViewed: 0,
+  reactionsSent: 0,
+  broadcastsSent: 0,
+  campaignMessagesSent: 0,
+  startedAt: new Date().toISOString()
+};
+
+// =======================================================
+// MULTI-ACCOUNT PERSISTENCE & RUNTIME ENGINE
+// =======================================================
+
+export interface AccountRecord {
   id: string;
   label: string;
-  phone?: string;
-  name?: string;
-  status: 'disconnected' | 'connecting' | 'connected';
-  phase?: string;
-  isPrimary?: boolean;
+  isDefault: boolean;
+  createdAt: string;
+  phone?: string | null;
+  name?: string | null;
+  lastConnectedAt?: string | null;
 }
 
 interface AccountRuntime {
   id: string;
   label: string;
-  phone?: string;
-  name?: string;
+  isDefault: boolean;
+  createdAt: string;
+  phone: string | null;
+  name: string | null;
   status: 'disconnected' | 'connecting' | 'connected';
-  phase?: string;
-  sock?: any;
-  qr?: string | null;
+  phase: string;
+  sock: any | null;
+  qr: string | null;
+  pairingCode: string | null;
   authDir: string;
-  isPrimary?: boolean;
+  keepAliveTimer: NodeJS.Timeout | null;
+  reconnectAttemptCount: number;
+  isInitializing: boolean;
+  lastConnectedAt: string | null;
+  stats: EngineStats;
+}
+
+const ACCOUNTS_FILE = path.join(__dirname, 'accounts.json');
+const SESSIONS_BASE_DIR = process.env.DATA_DIR || path.join(__dirname, 'session_auth');
+
+if (!fs.existsSync(SESSIONS_BASE_DIR)) {
+  fs.mkdirSync(SESSIONS_BASE_DIR, { recursive: true });
+}
+
+// Migrate legacy single session auth directory if needed
+const legacyCreds = path.join(SESSIONS_BASE_DIR, 'creds.json');
+const primaryAuthDir = path.join(SESSIONS_BASE_DIR, 'acc_primary');
+
+if (fs.existsSync(legacyCreds) && !fs.existsSync(primaryAuthDir)) {
+  try {
+    fs.mkdirSync(primaryAuthDir, { recursive: true });
+    const files = fs.readdirSync(SESSIONS_BASE_DIR);
+    for (const file of files) {
+      if (file !== 'acc_primary' && !file.startsWith('acc_')) {
+        const src = path.join(SESSIONS_BASE_DIR, file);
+        const dest = path.join(primaryAuthDir, file);
+        if (fs.statSync(src).isFile()) {
+          fs.renameSync(src, dest);
+        }
+      }
+    }
+    console.log('[Migration] Successfully migrated legacy single session to ./session_auth/acc_primary');
+  } catch (e) {
+    console.error('[Migration Error]', e);
+  }
 }
 
 const accountsMap: Map<string, AccountRuntime> = new Map();
-let activeAccountId = 'primary';
+let activeAccountId = 'acc_primary';
 
-function getActiveAccount(): AccountRuntime | undefined {
-  if (accountsMap.has(activeAccountId)) {
-    return accountsMap.get(activeAccountId);
+function loadAccountsList(): AccountRecord[] {
+  if (fs.existsSync(ACCOUNTS_FILE)) {
+    try {
+      const records: AccountRecord[] = JSON.parse(fs.readFileSync(ACCOUNTS_FILE, 'utf-8'));
+      if (Array.isArray(records) && records.length > 0) {
+        return records;
+      }
+    } catch (e) {
+      console.error('Error loading accounts.json:', e);
+    }
   }
-  return {
-    id: 'primary',
-    label: activePhone ? `+${activePhone}` : 'Primary Account',
-    phone: activePhone || undefined,
-    name: activePushName || undefined,
-    status: connectionStatus,
-    phase: connectionPhase,
-    sock,
-    authDir: AUTH_DIR,
-    isPrimary: true
+
+  // Default fallback account
+  const defaultAccounts: AccountRecord[] = [
+    {
+      id: 'acc_primary',
+      label: 'Primary Account',
+      isDefault: true,
+      createdAt: new Date().toISOString(),
+      phone: null,
+      name: null,
+      lastConnectedAt: null
+    }
+  ];
+  saveAccountsToFile(defaultAccounts);
+  return defaultAccounts;
+}
+
+function saveAccountsToFile(records?: AccountRecord[]) {
+  try {
+    const listToSave = records || Array.from(accountsMap.values()).map(acc => ({
+      id: acc.id,
+      label: acc.label,
+      isDefault: acc.isDefault,
+      createdAt: acc.createdAt,
+      phone: acc.phone,
+      name: acc.name,
+      lastConnectedAt: acc.lastConnectedAt
+    }));
+    fs.writeFileSync(ACCOUNTS_FILE, JSON.stringify(listToSave, null, 2));
+  } catch (e) {
+    console.error('Failed to save accounts.json:', e);
+  }
+}
+
+function getActiveAccount(): AccountRuntime {
+  if (accountsMap.has(activeAccountId)) {
+    return accountsMap.get(activeAccountId)!;
+  }
+  const first = accountsMap.values().next().value;
+  if (first) {
+    activeAccountId = first.id;
+    return first;
+  }
+  // Create default fallback runtime
+  const fallback: AccountRuntime = {
+    id: 'acc_primary',
+    label: 'Primary Account',
+    isDefault: true,
+    createdAt: new Date().toISOString(),
+    phone: null,
+    name: null,
+    status: 'disconnected',
+    phase: 'idle',
+    sock: null,
+    qr: null,
+    pairingCode: null,
+    authDir: path.join(SESSIONS_BASE_DIR, 'acc_primary'),
+    keepAliveTimer: null,
+    reconnectAttemptCount: 0,
+    isInitializing: false,
+    lastConnectedAt: null,
+    stats: { ...globalStats }
   };
+  accountsMap.set(fallback.id, fallback);
+  return fallback;
+}
+
+function getAccount(id?: string): AccountRuntime {
+  if (id && accountsMap.has(id)) {
+    return accountsMap.get(id)!;
+  }
+  return getActiveAccount();
 }
 
 function getAllAccountsList(): ConnectedAccount[] {
-  if (accountsMap.size === 0) {
-    return [{
-      id: 'primary',
-      label: activePhone ? `+${activePhone}` : 'Primary Account',
-      phone: activePhone || undefined,
-      name: activePushName || undefined,
-      status: connectionStatus,
-      phase: connectionPhase,
-      isPrimary: true
-    }];
-  }
   return Array.from(accountsMap.values()).map(acc => ({
     id: acc.id,
     label: acc.label || (acc.phone ? `+${acc.phone}` : 'Account'),
@@ -438,17 +518,15 @@ function getAllAccountsList(): ConnectedAccount[] {
     name: acc.name,
     status: acc.status,
     phase: acc.phase,
-    isPrimary: acc.isPrimary
+    hasQr: !!acc.qr,
+    qr: acc.qr,
+    pairingCode: acc.pairingCode,
+    isDefault: acc.isDefault,
+    createdAt: acc.createdAt,
+    lastConnectedAt: acc.lastConnectedAt,
+    stats: acc.stats
   }));
 }
-
-const stats = {
-  statusesViewed: 0,
-  reactionsSent: 0,
-  broadcastsSent: 0,
-  campaignMessagesSent: 0,
-  startedAt: new Date().toISOString()
-};
 
 // Spintax Helper: Recursively parses {opt1|opt2|opt3}
 export function parseSpintax(text: string): string {
@@ -503,24 +581,38 @@ function addLog(message: string, type: ActivityLog['type'] = 'info', category: A
   if (recentLogs.length > 300) recentLogs.pop();
   console.log(`[WA Engine][${category?.toUpperCase()}][${type.toUpperCase()}] ${message}`);
 
-  const sseData = `data: ${JSON.stringify({ type: 'log', log: logItem, stats, campaign: currentCampaign })}\n\n`;
+  const activeAcc = getActiveAccount();
+  const sseData = `data: ${JSON.stringify({ 
+    type: 'log', 
+    log: logItem, 
+    stats: globalStats, 
+    campaign: currentCampaign,
+    activeAccountId,
+    accounts: getAllAccountsList()
+  })}\n\n`;
   clientsSse.forEach(client => {
     try { client.write(sseData); } catch (e) {}
   });
 }
 
 function broadcastStateUpdate() {
+  const activeAcc = getActiveAccount();
+  const accountsList = getAllAccountsList();
+
   const sseData = `data: ${JSON.stringify({
     type: 'state',
-    status: connectionStatus,
-    phase: connectionPhase,
-    phone: activePhone,
-    name: activePushName,
-    hasQr: !!qrCodeDataUrl,
-    qr: qrCodeDataUrl,
-    stats,
+    status: activeAcc.status,
+    phase: activeAcc.phase,
+    phone: activeAcc.phone,
+    name: activeAcc.name,
+    hasQr: !!activeAcc.qr,
+    qr: activeAcc.qr,
+    pairingCode: activeAcc.pairingCode,
+    stats: globalStats,
     config,
-    campaign: currentCampaign
+    campaign: currentCampaign,
+    activeAccountId,
+    accounts: accountsList
   })}\n\n`;
   clientsSse.forEach(client => {
     try { client.write(sseData); } catch (e) {}
@@ -529,7 +621,6 @@ function broadcastStateUpdate() {
 
 function extractMessageText(message: any): string {
   if (!message) return '';
-  // Unwrap nested message wrappers (ephemeral, viewOnce, edited, etc.)
   if (message.ephemeralMessage?.message) return extractMessageText(message.ephemeralMessage.message);
   if (message.viewOnceMessage?.message) return extractMessageText(message.viewOnceMessage.message);
   if (message.viewOnceMessageV2?.message) return extractMessageText(message.viewOnceMessageV2.message);
@@ -550,54 +641,82 @@ function extractMessageText(message: any): string {
   );
 }
 
-const AUTH_DIR = process.env.DATA_DIR || path.join(__dirname, 'session_auth');
+function startAccountKeepAlive(acc: AccountRuntime) {
+  if (acc.keepAliveTimer) clearInterval(acc.keepAliveTimer);
+  acc.keepAliveTimer = setInterval(async () => {
+    try {
+      if (acc.sock && acc.status === 'connected') {
+        await acc.sock.sendPresenceUpdate('available').catch(() => {});
+        if (acc.sock.ws && typeof acc.sock.ws.ping === 'function') {
+          try { acc.sock.ws.ping(); } catch (e) {}
+        }
+      }
+    } catch (err: any) {
+      // Quiet background keepalive
+    }
+  }, 25000);
+}
 
-async function initWhatsApp(forceFresh = false) {
-  if (isInitializing) return;
-  isInitializing = true;
+async function initAccountSocket(accountId: string, forceFresh = false) {
+  const acc = accountsMap.get(accountId);
+  if (!acc) return;
+  if (acc.isInitializing) return;
+  acc.isInitializing = true;
 
   try {
-    // 1. Cleanly tear down any prior socket instance to prevent listener leaks and dead sockets
-    if (sock) {
+    // 1. Cleanly tear down any prior socket instance
+    if (acc.sock) {
       try {
-        sock.ev.removeAllListeners('connection.update');
-        sock.ev.removeAllListeners('creds.update');
-        sock.ev.removeAllListeners('messages.upsert');
-        sock.ev.removeAllListeners('groups.update');
-        sock.ev.removeAllListeners('group-participants.update');
-        if (sock.ws) {
-          try { sock.ws.close(); } catch (e) {}
+        acc.sock.ev.removeAllListeners('connection.update');
+        acc.sock.ev.removeAllListeners('creds.update');
+        acc.sock.ev.removeAllListeners('messages.upsert');
+        acc.sock.ev.removeAllListeners('groups.update');
+        acc.sock.ev.removeAllListeners('group-participants.update');
+        if (acc.sock.ws) {
+          try { acc.sock.ws.close(); } catch (e) {}
         }
-        try { sock.end(undefined); } catch (e) {}
+        try { acc.sock.end(undefined); } catch (e) {}
       } catch (e) {}
-      sock = null;
+      acc.sock = null;
+    }
+
+    if (acc.keepAliveTimer) {
+      clearInterval(acc.keepAliveTimer);
+      acc.keepAliveTimer = null;
     }
 
     if (forceFresh) {
-      addLog('Clearing session credentials for fresh connection...', 'info', 'system');
-      if (fs.existsSync(AUTH_DIR)) {
-        fs.rmSync(AUTH_DIR, { recursive: true, force: true });
+      addLog(`[${acc.label}] Clearing session credentials for fresh pairing...`, 'info', 'system');
+      if (fs.existsSync(acc.authDir)) {
+        fs.rmSync(acc.authDir, { recursive: true, force: true });
       }
-      activePhone = null;
-      activePushName = null;
-      qrCodeDataUrl = null;
+      acc.phone = null;
+      acc.name = null;
+      acc.qr = null;
+      acc.pairingCode = null;
+      acc.status = 'disconnected';
+      acc.phase = 'idle';
+      saveAccountsToFile();
     }
 
-    if (!fs.existsSync(AUTH_DIR)) {
-      fs.mkdirSync(AUTH_DIR, { recursive: true });
+    if (!fs.existsSync(acc.authDir)) {
+      fs.mkdirSync(acc.authDir, { recursive: true });
     }
 
-    const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
-    const { version } = await fetchLatestBaileysVersion().catch(() => ({ version: [2, 3000, 1015901307] as [number, number, number], isLatest: true }));
-    
-    addLog(`Initializing Baileys Socket v${(version as [number, number, number]).join('.')}...`, 'info', 'system');
-    connectionStatus = 'connecting';
-    connectionPhase = 'initializing';
+    const { state, saveCreds } = await useMultiFileAuthState(acc.authDir);
+    const { version } = await fetchLatestBaileysVersion().catch(() => ({ 
+      version: [2, 3000, 1015901307] as [number, number, number], 
+      isLatest: true 
+    }));
+
+    addLog(`[${acc.label}] Initializing Baileys Socket v${(version as [number, number, number]).join('.')}...`, 'info', 'system');
+    acc.status = 'connecting';
+    acc.phase = 'initializing';
     broadcastStateUpdate();
 
     const browserTuple: [string, string, string] = ['Ubuntu', 'Chrome', '20.0.04'];
 
-    sock = makeWASocket({
+    const socketInstance = makeWASocket({
       version: version as [number, number, number],
       logger: pino({ level: 'silent' }) as any,
       printQRInTerminal: false,
@@ -613,102 +732,111 @@ async function initWhatsApp(forceFresh = false) {
       defaultQueryTimeoutMs: 60000,
       keepAliveIntervalMs: 10000,
       retryRequestDelayMs: 250,
-      getMessage: async (key: any) => {
-        return { conversation: '' };
-      }
+      getMessage: async () => ({ conversation: '' })
     });
 
-    sock.ev.on('creds.update', saveCreds);
+    acc.sock = socketInstance;
+
+    socketInstance.ev.on('creds.update', saveCreds);
 
     // Group Participants Event Listener
-    sock.ev.on('group-participants.update', async ({ id, participants, action }: any) => {
+    socketInstance.ev.on('group-participants.update', async ({ id, participants, action }: any) => {
       try {
         const formattedAction = action === 'add' ? 'joined' : action === 'remove' ? 'left' : action;
         const members = (participants || []).map((p: string) => '+' + p.split('@')[0]).join(', ');
-        addLog(`👥 Group Update: ${members} ${formattedAction} (${id.split('@')[0]})`, 'info', 'group');
+        addLog(`👥 [${acc.label}] Group Update: ${members} ${formattedAction} (${id.split('@')[0]})`, 'info', 'group');
         broadcastStateUpdate();
       } catch (e) {}
     });
 
-    sock.ev.on('connection.update', async (update: any) => {
+    // Connection Update Event Listener
+    socketInstance.ev.on('connection.update', async (update: any) => {
       const { connection, lastDisconnect, qr } = update;
 
       if (qr) {
         try {
-          qrCodeDataUrl = await QRCode.toDataURL(qr, {
+          acc.qr = await QRCode.toDataURL(qr, {
             errorCorrectionLevel: 'M',
             margin: 2,
             color: { dark: '#075e54', light: '#ffffff' }
           });
-          connectionStatus = 'connecting';
-          connectionPhase = 'awaiting_pair';
-          addLog('QR Code & 8-Digit Pairing ready. Enter phone number to link.', 'info', 'system');
+          acc.status = 'connecting';
+          acc.phase = 'awaiting_pair';
+          addLog(`[${acc.label}] QR Code & Pairing ready. Enter phone number to link.`, 'info', 'system');
           broadcastStateUpdate();
         } catch (err) {
-          console.error('Failed to generate QR code data URL', err);
+          console.error(`Failed to generate QR code for ${acc.label}`, err);
         }
       }
 
       if (connection === 'open') {
-        connectionStatus = 'connected';
-        connectionPhase = 'ready';
-        qrCodeDataUrl = null;
-        reconnectAttemptCount = 0;
-        activePhone = sock.user?.id?.split(':')[0]?.split('@')[0] || sock.user?.id || 'Connected User';
-        activePushName = sock.user?.name || sock.user?.notify || 'My WhatsApp';
-        addLog(`WhatsApp socket connected successfully as +${activePhone} (${activePushName})`, 'success', 'system');
+        acc.status = 'connected';
+        acc.phase = 'ready';
+        acc.qr = null;
+        acc.pairingCode = null;
+        acc.reconnectAttemptCount = 0;
+        acc.lastConnectedAt = new Date().toISOString();
+        acc.phone = socketInstance.user?.id?.split(':')[0]?.split('@')[0] || socketInstance.user?.id || 'Connected User';
+        acc.name = socketInstance.user?.name || socketInstance.user?.notify || acc.label;
         
-        // Start 24/7 Keep-Alive heartbeat loop to prevent idle disconnects
-        startKeepAliveLoop();
-        sock.sendPresenceUpdate('available').catch(() => {});
+        saveAccountsToFile();
+        addLog(`WhatsApp socket connected successfully for "${acc.label}" as +${acc.phone} (${acc.name})`, 'success', 'system');
+        
+        startAccountKeepAlive(acc);
+        socketInstance.sendPresenceUpdate('available').catch(() => {});
         broadcastStateUpdate();
       }
 
       if (connection === 'close') {
-        if (keepAliveTimer) {
-          clearInterval(keepAliveTimer);
-          keepAliveTimer = null;
+        if (acc.keepAliveTimer) {
+          clearInterval(acc.keepAliveTimer);
+          acc.keepAliveTimer = null;
         }
 
         const statusCode = lastDisconnect?.error?.output?.statusCode || lastDisconnect?.error?.statusCode;
         const isLoggedOut = statusCode === DisconnectReason.loggedOut || statusCode === 401;
         const shouldReconnect = !isLoggedOut;
-        
+
         if (isLoggedOut) {
-          connectionStatus = 'disconnected';
-          connectionPhase = 'logged_out';
-          qrCodeDataUrl = null;
-          addLog('Session logged out by WhatsApp. Resetting session credentials...', 'warn', 'system');
+          acc.status = 'disconnected';
+          acc.phase = 'logged_out';
+          acc.qr = null;
+          acc.pairingCode = null;
+          acc.phone = null;
+          acc.name = null;
+          saveAccountsToFile();
+          addLog(`[${acc.label}] Session logged out by WhatsApp. Resetting session credentials...`, 'warn', 'system');
+          
           try {
-            fs.rmSync(AUTH_DIR, { recursive: true, force: true });
+            if (fs.existsSync(acc.authDir)) {
+              fs.rmSync(acc.authDir, { recursive: true, force: true });
+            }
           } catch (e) {}
-          activePhone = null;
-          activePushName = null;
+
           broadcastStateUpdate();
           setTimeout(() => {
-            isInitializing = false;
-            initWhatsApp(true);
+            acc.isInitializing = false;
+            initAccountSocket(acc.id, true);
           }, 2000);
         } else if (shouldReconnect) {
-          // When reconnecting transient socket drops, maintain steady state without jarring UI
-          connectionStatus = 'connecting';
-          connectionPhase = 'reconnecting';
+          acc.status = 'connecting';
+          acc.phase = 'reconnecting';
           broadcastStateUpdate();
 
-          reconnectAttemptCount++;
-          const retryDelay = Math.min(1500 * Math.pow(1.2, Math.min(reconnectAttemptCount, 5)), 10000);
-          addLog(`Re-establishing socket connection in ${Math.round(retryDelay / 1000)}s (Code: ${statusCode || 'transient'})...`, 'info', 'system');
+          acc.reconnectAttemptCount++;
+          const retryDelay = Math.min(1500 * Math.pow(1.2, Math.min(acc.reconnectAttemptCount, 5)), 10000);
+          addLog(`[${acc.label}] Re-establishing socket in ${Math.round(retryDelay / 1000)}s (Code: ${statusCode || 'transient'})...`, 'info', 'system');
           
           setTimeout(() => {
-            isInitializing = false;
-            initWhatsApp(false);
+            acc.isInitializing = false;
+            initAccountSocket(acc.id, false);
           }, retryDelay);
         }
       }
     });
 
     // Inbound Messages & Statuses Listener
-    sock.ev.on('messages.upsert', async ({ messages, type }: any) => {
+    socketInstance.ev.on('messages.upsert', async ({ messages }: any) => {
       if (!messages || !messages.length) return;
 
       for (const msg of messages) {
@@ -718,7 +846,6 @@ async function initWhatsApp(forceFresh = false) {
 
         // 1. WhatsApp Status Broadcast Event
         if (remoteJid === 'status@broadcast') {
-          // Never read or react to our own posted status
           if (fromMe) continue;
 
           const participant = msg.key?.participant || msg.participant || (msg.key as any)?.participantJid || '';
@@ -727,19 +854,20 @@ async function initWhatsApp(forceFresh = false) {
           const senderPhone = participant.split('@')[0] || 'Contact';
           const senderName = msg.pushName || senderPhone;
 
-          // Auto-View Status (marks contact story as viewed)
-          if (config.autoView && sock) {
+          // Auto-View Status
+          if (config.autoView && acc.sock && acc.status === 'connected') {
             try {
               const delay = (config.viewDelaySeconds || 2) * 1000 + Math.random() * 800;
               setTimeout(async () => {
                 try {
-                  if (sock && connectionStatus === 'connected') {
-                    await sock.readMessages([{
+                  if (acc.sock && acc.status === 'connected') {
+                    await acc.sock.readMessages([{
                       remoteJid: 'status@broadcast',
                       id: msg.key.id,
                       participant: participant
                     }]);
-                    stats.statusesViewed++;
+                    globalStats.statusesViewed++;
+                    acc.stats.statusesViewed++;
                     
                     const statusItem: ViewedStatusItem = {
                       id: msg.key.id || String(Date.now()),
@@ -752,59 +880,60 @@ async function initWhatsApp(forceFresh = false) {
                     viewedStatusesLog.unshift(statusItem);
                     if (viewedStatusesLog.length > 100) viewedStatusesLog.pop();
 
-                    addLog(`👁️ Viewed story from ${senderName} (+${senderPhone})`, 'event', 'status');
+                    addLog(`👁️ [${acc.label}] Viewed story from ${senderName} (+${senderPhone})`, 'event', 'status');
                     broadcastStateUpdate();
                   }
                 } catch (err: any) {
-                  console.error('Error auto-viewing status:', err?.message);
+                  console.error(`[${acc.label}] Error auto-viewing status:`, err?.message);
                 }
               }, delay);
             } catch (err: any) {
-              console.error('Error scheduling status view:', err?.message);
+              console.error(`[${acc.label}] Error scheduling status view:`, err?.message);
             }
           }
 
           // Auto-React to Status
-          if (config.autoReact && sock && config.reactionEmojis?.length > 0) {
+          if (config.autoReact && acc.sock && acc.status === 'connected' && config.reactionEmojis?.length > 0) {
             try {
               const randomEmoji = config.reactionEmojis[Math.floor(Math.random() * config.reactionEmojis.length)];
               const reactDelay = (config.viewDelaySeconds || 2) * 1000 + 1200 + Math.random() * 1500;
               setTimeout(async () => {
                 try {
-                  if (sock && connectionStatus === 'connected') {
+                  if (acc.sock && acc.status === 'connected') {
                     try {
-                      await sock.sendMessage('status@broadcast', {
+                      await acc.sock.sendMessage('status@broadcast', {
                         react: { text: randomEmoji, key: msg.key }
                       }, {
                         statusJidList: [participant]
                       });
                     } catch (e1) {
                       try {
-                        await sock.sendMessage(participant, {
+                        await acc.sock.sendMessage(participant, {
                           react: { text: randomEmoji, key: msg.key }
                         });
                       } catch (e2) {}
                     }
 
-                    stats.reactionsSent++;
+                    globalStats.reactionsSent++;
+                    acc.stats.reactionsSent++;
 
                     const found = viewedStatusesLog.find(s => s.senderPhone === senderPhone);
                     if (found) found.reactedEmoji = randomEmoji;
 
-                    addLog(`🔥 Auto-reacted ${randomEmoji} to story from ${senderName}`, 'event', 'status');
+                    addLog(`🔥 [${acc.label}] Auto-reacted ${randomEmoji} to story from ${senderName}`, 'event', 'status');
                     broadcastStateUpdate();
                   }
                 } catch (reactErr: any) {
-                  console.error('Error auto-reacting:', reactErr?.message);
+                  console.error(`[${acc.label}] Error auto-reacting:`, reactErr?.message);
                 }
               }, reactDelay);
             } catch (err: any) {
-              console.error('Error preparing reaction:', err?.message);
+              console.error(`[${acc.label}] Error preparing reaction:`, err?.message);
             }
           }
         }
 
-        // 2. Direct 1-on-1 Messages (Contact Indexing & Webhook Dispatch)
+        // 2. Direct 1-on-1 Messages
         const isDirectMessage = remoteJid && 
           !remoteJid.endsWith('@g.us') && 
           remoteJid !== 'status@broadcast' && 
@@ -815,13 +944,11 @@ async function initWhatsApp(forceFresh = false) {
           const senderName = msg.pushName || 'Contact';
           const senderPhone = remoteJid.split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
 
-          // Automatically record contact in contact manager & audience list
           recordContact(remoteJid, senderName);
 
           if (text && !text.startsWith('/skip') && !text.startsWith('!stop')) {
-            addLog(`📥 Incoming DM from ${senderName} (+${senderPhone}): "${text.slice(0, 60)}"`, 'info', 'group');
+            addLog(`📥 [${acc.label}] DM from ${senderName} (+${senderPhone}): "${text.slice(0, 60)}"`, 'info', 'group');
 
-            // Forward to external Webhook if configured
             if (webhookConfig.enabled && webhookConfig.url) {
               fetch(webhookConfig.url, {
                 method: 'POST',
@@ -831,6 +958,7 @@ async function initWhatsApp(forceFresh = false) {
                 },
                 body: JSON.stringify({
                   event: 'message.received',
+                  account: { id: acc.id, label: acc.label, phone: acc.phone },
                   from: senderPhone,
                   name: senderName,
                   text: text,
@@ -844,16 +972,53 @@ async function initWhatsApp(forceFresh = false) {
     });
 
   } catch (error: any) {
-    console.error('Fatal initialization error in WhatsApp engine:', error);
-    addLog(`Fatal engine error: ${error.message}`, 'error', 'system');
-    connectionStatus = 'disconnected';
-    connectionPhase = 'error';
+    console.error(`Fatal initialization error for ${acc.label}:`, error);
+    addLog(`Fatal engine error on ${acc.label}: ${error.message}`, 'error', 'system');
+    acc.status = 'disconnected';
+    acc.phase = 'error';
     setTimeout(() => {
-      isInitializing = false;
-      initWhatsApp(false);
+      acc.isInitializing = false;
+      initAccountSocket(acc.id, false);
     }, 5000);
   } finally {
-    isInitializing = false;
+    acc.isInitializing = false;
+  }
+}
+
+// Initialize all accounts concurrently on startup
+async function startAllAccounts() {
+  const records = loadAccountsList();
+  
+  records.forEach(rec => {
+    const runtime: AccountRuntime = {
+      id: rec.id,
+      label: rec.label,
+      isDefault: rec.isDefault,
+      createdAt: rec.createdAt,
+      phone: rec.phone || null,
+      name: rec.name || null,
+      status: 'disconnected',
+      phase: 'idle',
+      sock: null,
+      qr: null,
+      pairingCode: null,
+      authDir: path.join(SESSIONS_BASE_DIR, rec.id),
+      keepAliveTimer: null,
+      reconnectAttemptCount: 0,
+      isInitializing: false,
+      lastConnectedAt: rec.lastConnectedAt || null,
+      stats: { ...globalStats }
+    };
+    accountsMap.set(rec.id, runtime);
+  });
+
+  if (records.length > 0) {
+    activeAccountId = records[0].id;
+  }
+
+  console.log(`[Account Manager] Initializing ${accountsMap.size} account(s) concurrently...`);
+  for (const accId of accountsMap.keys()) {
+    initAccountSocket(accId, false);
   }
 }
 
@@ -861,11 +1026,14 @@ async function initWhatsApp(forceFresh = false) {
 
 // 0. Keep-Alive / Health Endpoint
 app.get(['/api/ping', '/api/health'], (req: Request, res: Response) => {
+  const activeAcc = getActiveAccount();
   res.json({
     status: 'ok',
     uptime: Math.floor(process.uptime()),
-    connected: connectionStatus === 'connected',
-    phone: activePhone,
+    connected: activeAcc.status === 'connected',
+    phone: activeAcc.phone,
+    accountsCount: accountsMap.size,
+    connectedAccountsCount: Array.from(accountsMap.values()).filter(a => a.status === 'connected').length,
     timestamp: new Date().toISOString()
   });
 });
@@ -964,18 +1132,348 @@ app.post('/api/webhook/config', (req: Request, res: Response) => {
 });
 
 // ==========================================
+// MULTI-ACCOUNT MANAGEMENT REST APIS
+// ==========================================
+
+// 1. List All Accounts
+app.get('/api/accounts', (req: Request, res: Response) => {
+  res.json({
+    success: true,
+    activeAccountId,
+    accounts: getAllAccountsList()
+  });
+});
+
+// 2. Add New WhatsApp Account
+app.post('/api/accounts', async (req: Request, res: Response) => {
+  try {
+    const { label } = req.body;
+    const accountIndex = accountsMap.size + 1;
+    const newId = 'acc_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 6);
+    const newLabel = (label && label.trim()) ? label.trim() : `WhatsApp Line ${accountIndex}`;
+
+    const newRuntime: AccountRuntime = {
+      id: newId,
+      label: newLabel,
+      isDefault: accountsMap.size === 0,
+      createdAt: new Date().toISOString(),
+      phone: null,
+      name: null,
+      status: 'disconnected',
+      phase: 'idle',
+      sock: null,
+      qr: null,
+      pairingCode: null,
+      authDir: path.join(SESSIONS_BASE_DIR, newId),
+      keepAliveTimer: null,
+      reconnectAttemptCount: 0,
+      isInitializing: false,
+      lastConnectedAt: null,
+      stats: { ...globalStats }
+    };
+
+    accountsMap.set(newId, newRuntime);
+    saveAccountsToFile();
+    activeAccountId = newId;
+
+    addLog(`📱 Added new WhatsApp account "${newLabel}". Initializing background socket...`, 'info', 'system');
+    
+    // Start its independent socket
+    initAccountSocket(newId, false);
+    broadcastStateUpdate();
+
+    res.json({
+      success: true,
+      account: {
+        id: newRuntime.id,
+        label: newRuntime.label,
+        status: newRuntime.status,
+        phase: newRuntime.phase,
+        isDefault: newRuntime.isDefault
+      },
+      activeAccountId: newId,
+      accounts: getAllAccountsList()
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 3. Switch / Select Active Account
+app.post('/api/accounts/:id/select', (req: Request, res: Response) => {
+  const { id } = req.params;
+  if (!accountsMap.has(id)) {
+    return res.status(404).json({ error: 'Account not found' });
+  }
+  activeAccountId = id;
+  const acc = accountsMap.get(id)!;
+  addLog(`🔄 Switched active view to account: "${acc.label}"`, 'info', 'system');
+  broadcastStateUpdate();
+  res.json({
+    success: true,
+    activeAccountId,
+    account: {
+      id: acc.id,
+      label: acc.label,
+      phone: acc.phone,
+      status: acc.status
+    }
+  });
+});
+
+// 4. Disconnect / Logout Specific Account
+app.post('/api/accounts/:id/disconnect', async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const acc = accountsMap.get(id);
+  if (!acc) {
+    return res.status(404).json({ error: 'Account not found' });
+  }
+
+  try {
+    addLog(`[${acc.label}] User requested disconnect.`, 'info', 'system');
+    if (acc.sock) {
+      try { await acc.sock.logout(); } catch (e) {}
+      try { acc.sock.end(undefined); } catch (e) {}
+    }
+
+    acc.status = 'disconnected';
+    acc.phase = 'closed';
+    acc.phone = null;
+    acc.name = null;
+    acc.qr = null;
+    acc.pairingCode = null;
+
+    if (fs.existsSync(acc.authDir)) {
+      fs.rmSync(acc.authDir, { recursive: true, force: true });
+    }
+    saveAccountsToFile();
+
+    setTimeout(() => initAccountSocket(acc.id, true), 1500);
+
+    broadcastStateUpdate();
+    res.json({ success: true, message: `Account "${acc.label}" disconnected and session cleared.` });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 5. Delete Account
+app.delete('/api/accounts/:id', (req: Request, res: Response) => {
+  const { id } = req.params;
+  const acc = accountsMap.get(id);
+  if (!acc) {
+    return res.status(404).json({ error: 'Account not found' });
+  }
+
+  if (accountsMap.size <= 1) {
+    return res.status(400).json({ error: 'Cannot delete the only remaining account. You can reset or disconnect it instead.' });
+  }
+
+  try {
+    if (acc.sock) {
+      try { acc.sock.logout(); } catch (e) {}
+      try { acc.sock.end(undefined); } catch (e) {}
+    }
+    if (acc.keepAliveTimer) {
+      clearInterval(acc.keepAliveTimer);
+    }
+    if (fs.existsSync(acc.authDir)) {
+      try { fs.rmSync(acc.authDir, { recursive: true, force: true }); } catch (e) {}
+    }
+
+    accountsMap.delete(id);
+    saveAccountsToFile();
+
+    if (activeAccountId === id) {
+      activeAccountId = accountsMap.keys().next().value || 'acc_primary';
+    }
+
+    addLog(`🗑️ Removed WhatsApp account "${acc.label}".`, 'warn', 'system');
+    broadcastStateUpdate();
+    res.json({ success: true, activeAccountId, accounts: getAllAccountsList() });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 6. Reset Specific Account
+app.post('/api/accounts/:id/reset', async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const acc = accountsMap.get(id);
+  if (!acc) return res.status(404).json({ error: 'Account not found' });
+
+  try {
+    addLog(`[${acc.label}] User triggered force reset of session credentials.`, 'info', 'system');
+    await initAccountSocket(acc.id, true);
+    res.json({ success: true, message: `Session storage cleared and socket restarted for "${acc.label}".` });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ==========================================
+// STATUS, QR & PAIRING ENDPOINTS
+// ==========================================
+
+// 1. Engine Status
+app.get('/api/status', (req: Request, res: Response) => {
+  const activeAcc = getActiveAccount();
+  const accountsList = getAllAccountsList();
+
+  res.json({
+    status: activeAcc.status,
+    phase: activeAcc.phase,
+    phone: activeAcc.phone,
+    name: activeAcc.name,
+    hasQr: !!activeAcc.qr,
+    qr: activeAcc.qr,
+    pairingCode: activeAcc.pairingCode,
+    autoReact: config.autoReact,
+    autoView: config.autoView,
+    reactionEmojis: config.reactionEmojis,
+    viewDelaySeconds: config.viewDelaySeconds,
+    stats: globalStats,
+    campaign: currentCampaign,
+    activeAccountId,
+    accounts: accountsList
+  });
+});
+
+// 2. QR Code endpoint
+app.get('/api/qr', (req: Request, res: Response) => {
+  const { accountId } = req.query;
+  const acc = getAccount(String(accountId || ''));
+  res.json({
+    qr: acc.qr,
+    status: acc.status,
+    phase: acc.phase,
+    accountId: acc.id
+  });
+});
+
+// 3. 8-Digit Pairing Code API (Supports multi-account & individual line pairing)
+app.post('/api/pairing-code', async (req: Request, res: Response) => {
+  try {
+    const { phoneNumber, accountId } = req.body;
+    if (!phoneNumber) {
+      return res.status(400).json({ error: 'Please provide a valid phone number in request body.' });
+    }
+
+    const cleanedNumber = String(phoneNumber).replace(/[^0-9]/g, '');
+    if (cleanedNumber.length < 8 || cleanedNumber.length > 16) {
+      return res.status(400).json({ error: 'Invalid phone number format. Include country code (e.g. 2347043537401 or 14155552671).' });
+    }
+
+    const targetAccount = getAccount(accountId || activeAccountId);
+
+    if (targetAccount.status === 'connected') {
+      return res.status(400).json({ 
+        error: `Account "${targetAccount.label}" is already paired & connected (+${targetAccount.phone})! Click "Connect Another Account" above to link a second WhatsApp line, or disconnect this one first.` 
+      });
+    }
+
+    // Ensure socket is initialized and connected to Baileys WS
+    if (!targetAccount.sock || !targetAccount.sock.ws || targetAccount.sock.ws.readyState !== 1) {
+      addLog(`[${targetAccount.label}] Connecting socket for pairing code request...`, 'info', 'system');
+      await initAccountSocket(targetAccount.id, false);
+      let retries = 0;
+      while ((!targetAccount.sock || !targetAccount.sock.ws || targetAccount.sock.ws.readyState !== 1) && retries < 18) {
+        await new Promise(r => setTimeout(r, 400));
+        retries++;
+      }
+    }
+
+    if (!targetAccount.sock || typeof targetAccount.sock.requestPairingCode !== 'function') {
+      throw new Error(`Socket engine not ready for ${targetAccount.label}. Please click "Reset Session" and retry.`);
+    }
+
+    addLog(`[${targetAccount.label}] Requesting official 8-digit Pairing Code for +${cleanedNumber}...`, 'info', 'system');
+    
+    const code = await targetAccount.sock.requestPairingCode(cleanedNumber);
+    const formattedCode = code?.match(/.{1,4}/g)?.join('-') || code;
+
+    targetAccount.pairingCode = formattedCode;
+    addLog(`[${targetAccount.label}] Pairing code generated: ${formattedCode}`, 'success', 'system');
+    broadcastStateUpdate();
+
+    res.json({
+      success: true,
+      accountId: targetAccount.id,
+      accountLabel: targetAccount.label,
+      phoneNumber: cleanedNumber,
+      code: formattedCode,
+      rawCode: code
+    });
+  } catch (error: any) {
+    console.error('Pairing code request error:', error);
+    addLog(`Pairing code request failed: ${error.message}`, 'error', 'system');
+    res.status(500).json({
+      error: error.message || 'Failed to request pairing code. If session is stuck, click "Reset Session" and retry.'
+    });
+  }
+});
+
+// 4. Force Reset & Reconnect Session (Supports specific account or active account)
+app.post('/api/reset-session', async (req: Request, res: Response) => {
+  try {
+    const { accountId } = req.body;
+    const targetAccount = getAccount(accountId || activeAccountId);
+    addLog(`User triggered Force Reset of session for "${targetAccount.label}".`, 'info', 'system');
+    await initAccountSocket(targetAccount.id, true);
+    res.json({ success: true, message: `Session storage cleared and socket restarted for "${targetAccount.label}".` });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 5. Logout / Disconnect (Supports specific account or active account)
+app.post('/api/logout', async (req: Request, res: Response) => {
+  try {
+    const { accountId } = req.body;
+    const targetAccount = getAccount(accountId || activeAccountId);
+    addLog(`User requested session disconnect for "${targetAccount.label}".`, 'info', 'system');
+    
+    if (targetAccount.sock) {
+      try { await targetAccount.sock.logout(); } catch (e) {}
+      try { targetAccount.sock.end(undefined); } catch (e) {}
+    }
+    
+    targetAccount.status = 'disconnected';
+    targetAccount.phase = 'closed';
+    targetAccount.phone = null;
+    targetAccount.name = null;
+    targetAccount.qr = null;
+    targetAccount.pairingCode = null;
+
+    if (fs.existsSync(targetAccount.authDir)) {
+      fs.rmSync(targetAccount.authDir, { recursive: true, force: true });
+    }
+    saveAccountsToFile();
+
+    setTimeout(() => initAccountSocket(targetAccount.id, true), 1500);
+
+    broadcastStateUpdate();
+    res.json({ success: true, message: `Session for "${targetAccount.label}" disconnected and cleared.` });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ==========================================
 // PUBLIC DEVELOPER REST API v1
 // ==========================================
 
 // 1. Connection Status Check
 app.get('/api/v1/status', validateApiKey, (req: Request, res: Response) => {
+  const activeAcc = getActiveAccount();
   res.json({
-    status: connectionStatus,
-    phase: connectionPhase,
-    phone: activePhone,
-    name: activePushName,
-    connected: connectionStatus === 'connected',
+    status: activeAcc.status,
+    phase: activeAcc.phase,
+    phone: activeAcc.phone,
+    name: activeAcc.name,
+    connected: activeAcc.status === 'connected',
     uptime: Math.floor(process.uptime()),
+    accounts: getAllAccountsList(),
     timestamp: new Date().toISOString()
   });
 });
@@ -983,17 +1481,17 @@ app.get('/api/v1/status', validateApiKey, (req: Request, res: Response) => {
 // 2. Send WhatsApp Message
 app.post('/api/v1/messages/send', validateApiKey, async (req: Request, res: Response) => {
   try {
-    const { to, message } = req.body;
+    const { to, message, accountId } = req.body;
 
     if (!to || !message) {
       return res.status(400).json({ error: 'Missing required fields: "to" and "message" are required.' });
     }
 
-    if (!sock || connectionStatus !== 'connected') {
-      return res.status(503).json({ error: 'WhatsApp socket is not connected. Pair your WhatsApp account in the dashboard first.' });
+    const acc = getAccount(accountId);
+    if (!acc.sock || acc.status !== 'connected') {
+      return res.status(503).json({ error: `WhatsApp socket for "${acc.label}" is not connected. Pair account in dashboard first.` });
     }
 
-    // Format destination JID
     let cleanNumber = String(to).replace(/[^0-9]/g, '');
     let jid = '';
     if (String(to).endsWith('@g.us') || String(to).endsWith('@s.whatsapp.net')) {
@@ -1006,16 +1504,19 @@ app.post('/api/v1/messages/send', validateApiKey, async (req: Request, res: Resp
     }
 
     const parsedText = parseSpintax(message);
-    const result = await sock.sendMessage(jid, { text: parsedText });
+    const result = await acc.sock.sendMessage(jid, { text: parsedText });
 
-    stats.campaignMessagesSent++;
-    addLog(`🚀 [REST API] Sent message to ${cleanNumber || jid}: "${parsedText.slice(0, 45)}..."`, 'success', 'system');
+    globalStats.campaignMessagesSent++;
+    acc.stats.campaignMessagesSent++;
+    addLog(`🚀 [REST API][${acc.label}] Sent message to ${cleanNumber || jid}: "${parsedText.slice(0, 45)}..."`, 'success', 'system');
     broadcastStateUpdate();
 
     res.json({
       success: true,
       messageId: result?.key?.id || ('msg_' + Date.now()),
       to: jid,
+      accountId: acc.id,
+      accountLabel: acc.label,
       timestamp: new Date().toISOString()
     });
   } catch (err: any) {
@@ -1024,17 +1525,18 @@ app.post('/api/v1/messages/send', validateApiKey, async (req: Request, res: Resp
   }
 });
 
-// 3. Send WhatsApp Media (Image / Document)
+// 3. Send WhatsApp Media
 app.post('/api/v1/messages/send-media', validateApiKey, async (req: Request, res: Response) => {
   try {
-    const { to, mediaUrl, base64, mimeType, caption, fileName } = req.body;
+    const { to, mediaUrl, base64, mimeType, caption, fileName, accountId } = req.body;
 
     if (!to || (!mediaUrl && !base64)) {
       return res.status(400).json({ error: 'Missing required fields: "to" and either "mediaUrl" or "base64" are required.' });
     }
 
-    if (!sock || connectionStatus !== 'connected') {
-      return res.status(503).json({ error: 'WhatsApp socket is not connected.' });
+    const acc = getAccount(accountId);
+    if (!acc.sock || acc.status !== 'connected') {
+      return res.status(503).json({ error: `WhatsApp socket for "${acc.label}" is not connected.` });
     }
 
     let cleanNumber = String(to).replace(/[^0-9]/g, '');
@@ -1062,14 +1564,15 @@ app.post('/api/v1/messages/send-media', validateApiKey, async (req: Request, res
       messagePayload = { document: buffer, mimetype: type, fileName: fileName || 'document', caption: caption || '' };
     }
 
-    const result = await sock.sendMessage(jid, messagePayload);
-    addLog(`📎 [REST API] Sent media to ${cleanNumber || jid}`, 'success', 'system');
+    const result = await acc.sock.sendMessage(jid, messagePayload);
+    addLog(`📎 [REST API][${acc.label}] Sent media to ${cleanNumber || jid}`, 'success', 'system');
     broadcastStateUpdate();
 
     res.json({
       success: true,
       messageId: result?.key?.id,
       to: jid,
+      accountId: acc.id,
       timestamp: new Date().toISOString()
     });
   } catch (err: any) {
@@ -1080,10 +1583,11 @@ app.post('/api/v1/messages/send-media', validateApiKey, async (req: Request, res
 // 4. List Joined Groups
 app.get('/api/v1/groups', validateApiKey, async (req: Request, res: Response) => {
   try {
-    if (!sock || connectionStatus !== 'connected') {
-      return res.status(503).json({ error: 'WhatsApp socket is not connected.' });
+    const acc = getAccount(req.query.accountId as string);
+    if (!acc.sock || acc.status !== 'connected') {
+      return res.status(503).json({ error: `WhatsApp socket for "${acc.label}" is not connected.` });
     }
-    const groups = await sock.groupFetchAllParticipating();
+    const groups = await acc.sock.groupFetchAllParticipating();
     const groupList = Object.values(groups).map((g: any) => ({
       id: g.id,
       subject: g.subject,
@@ -1100,26 +1604,29 @@ app.get('/api/v1/groups', validateApiKey, async (req: Request, res: Response) =>
 // 5. Send Message to Group
 app.post('/api/v1/groups/send', validateApiKey, async (req: Request, res: Response) => {
   try {
-    const { groupId, message } = req.body;
+    const { groupId, message, accountId } = req.body;
     if (!groupId || !message) {
       return res.status(400).json({ error: 'Fields "groupId" and "message" are required.' });
     }
-    if (!sock || connectionStatus !== 'connected') {
-      return res.status(503).json({ error: 'WhatsApp socket is not connected.' });
+    const acc = getAccount(accountId);
+    if (!acc.sock || acc.status !== 'connected') {
+      return res.status(503).json({ error: `WhatsApp socket for "${acc.label}" is not connected.` });
     }
 
     const jid = groupId.includes('@g.us') ? groupId : `${groupId}@g.us`;
     const parsedText = parseSpintax(message);
-    const result = await sock.sendMessage(jid, { text: parsedText });
+    const result = await acc.sock.sendMessage(jid, { text: parsedText });
 
-    stats.campaignMessagesSent++;
-    addLog(`👥 [REST API] Dispatched message to group (${jid})`, 'success', 'group');
+    globalStats.campaignMessagesSent++;
+    acc.stats.campaignMessagesSent++;
+    addLog(`👥 [REST API][${acc.label}] Dispatched message to group (${jid})`, 'success', 'group');
     broadcastStateUpdate();
 
     res.json({
       success: true,
       messageId: result?.key?.id,
       groupId: jid,
+      accountId: acc.id,
       timestamp: new Date().toISOString()
     });
   } catch (err: any) {
@@ -1129,137 +1636,15 @@ app.post('/api/v1/groups/send', validateApiKey, async (req: Request, res: Respon
 
 // 6. Live Engine Stats
 app.get('/api/v1/stats', validateApiKey, (req: Request, res: Response) => {
+  const activeAcc = getActiveAccount();
   res.json({
     success: true,
-    stats,
-    connected: connectionStatus === 'connected',
-    phone: activePhone,
-    uptime: Math.floor(process.uptime())
+    stats: globalStats,
+    connected: activeAcc.status === 'connected',
+    phone: activeAcc.phone,
+    uptime: Math.floor(process.uptime()),
+    accounts: getAllAccountsList()
   });
-});
-
-// 1. Engine Status
-app.get('/api/status', (req: Request, res: Response) => {
-  const activeAcc = getActiveAccount();
-  const accountsList = getAllAccountsList();
-
-  res.json({
-    status: connectionStatus,
-    phase: connectionPhase,
-    phone: activePhone,
-    name: activePushName,
-    hasQr: !!qrCodeDataUrl,
-    qr: qrCodeDataUrl,
-    autoReact: config.autoReact,
-    autoView: config.autoView,
-    reactionEmojis: config.reactionEmojis,
-    viewDelaySeconds: config.viewDelaySeconds,
-    stats,
-    campaign: currentCampaign,
-    activeAccountId: activeAcc?.id,
-    accounts: accountsList
-  });
-});
-
-// 2. QR Code endpoint
-app.get('/api/qr', (req: Request, res: Response) => {
-  res.json({
-    qr: qrCodeDataUrl,
-    status: connectionStatus,
-    phase: connectionPhase
-  });
-});
-
-// 3. 8-Digit Pairing Code API
-app.post('/api/pairing-code', async (req: Request, res: Response) => {
-  try {
-    const { phoneNumber } = req.body;
-    if (!phoneNumber) {
-      return res.status(400).json({ error: 'Please provide a valid phone number in request body.' });
-    }
-
-    const cleanedNumber = String(phoneNumber).replace(/[^0-9]/g, '');
-    if (cleanedNumber.length < 8 || cleanedNumber.length > 16) {
-      return res.status(400).json({ error: 'Invalid phone number format. Include country code (e.g. 2347043537401 or 14155552671).' });
-    }
-
-    if (connectionStatus === 'connected') {
-      return res.status(400).json({ error: 'WhatsApp is already connected! Click "Disconnect" first to link a new number.' });
-    }
-
-    if (!sock || !sock.ws || sock.ws.readyState !== 1) {
-      addLog('Socket connecting for pairing code request...', 'info', 'system');
-      await initWhatsApp(false);
-      let retries = 0;
-      while ((!sock || !sock.ws || sock.ws.readyState !== 1) && retries < 15) {
-        await new Promise(r => setTimeout(r, 400));
-        retries++;
-      }
-    }
-
-    if (!sock || typeof sock.requestPairingCode !== 'function') {
-      throw new Error('Socket engine not ready. Please try again or click Reset Session.');
-    }
-
-    addLog(`Requesting official 8-digit Pairing Code for +${cleanedNumber}...`, 'info', 'system');
-    
-    const code = await sock.requestPairingCode(cleanedNumber);
-    const formattedCode = code?.match(/.{1,4}/g)?.join('-') || code;
-
-    addLog(`Pairing code generated: ${formattedCode}`, 'success', 'system');
-
-    res.json({
-      success: true,
-      phoneNumber: cleanedNumber,
-      code: formattedCode,
-      rawCode: code
-    });
-  } catch (error: any) {
-    console.error('Pairing code request error:', error);
-    addLog(`Pairing code request failed: ${error.message}`, 'error', 'system');
-    res.status(500).json({
-      error: error.message || 'Failed to request pairing code. If session is stuck, click "Reset Session" and retry.'
-    });
-  }
-});
-
-// 4. Force Reset & Reconnect Session
-app.post('/api/reset-session', async (req: Request, res: Response) => {
-  try {
-    addLog('User triggered Force Reset of WhatsApp session.', 'info', 'system');
-    await initWhatsApp(true);
-    res.json({ success: true, message: 'Session storage cleared and socket restarted.' });
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// 5. Logout / Disconnect
-app.post('/api/logout', async (req: Request, res: Response) => {
-  try {
-    addLog('User requested WhatsApp session disconnect.', 'info', 'system');
-    if (sock) {
-      try { await sock.logout(); } catch (e) {}
-      try { sock.end(undefined); } catch (e) {}
-    }
-    
-    connectionStatus = 'disconnected';
-    connectionPhase = 'closed';
-    activePhone = null;
-    activePushName = null;
-    qrCodeDataUrl = null;
-
-    if (fs.existsSync(AUTH_DIR)) {
-      fs.rmSync(AUTH_DIR, { recursive: true, force: true });
-    }
-
-    setTimeout(() => initWhatsApp(true), 1500);
-
-    broadcastStateUpdate();
-    res.json({ success: true, message: 'Session disconnected and cleared.' });
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
-  }
 });
 
 function prepareMediaPayload(mediaUrlOrData: string, mediaType: 'image' | 'video' = 'image'): { image?: any; video?: any } {
@@ -1305,7 +1690,6 @@ function getTargetStatusJids(targetTags?: string[], targetContactJids?: string[]
     targetJids = Array.from(contactsMap.keys());
   }
 
-  // Filter out group JIDs and non-contact JIDs
   return targetJids.filter(jid => 
     jid && 
     !jid.endsWith('@g.us') && 
@@ -1339,35 +1723,27 @@ app.post('/api/status/post', async (req: Request, res: Response) => {
 
     // Resolve target account sockets
     const targetSockets: { id: string; label: string; sockInstance: any }[] = [];
-    const accountsList = getAllAccountsList();
-
-    if (broadcastToAllAccounts && accountsList.length > 0) {
-      accountsList.forEach(acc => {
-        const accRuntime = accountsMap.get(acc.id);
-        if (accRuntime?.sock && accRuntime.status === 'connected') {
-          targetSockets.push({ id: acc.id, label: acc.label, sockInstance: accRuntime.sock });
+    
+    if (broadcastToAllAccounts) {
+      accountsMap.forEach(acc => {
+        if (acc.sock && acc.status === 'connected') {
+          targetSockets.push({ id: acc.id, label: acc.label, sockInstance: acc.sock });
         }
       });
     }
 
-    // Fallback to specific or active account
     if (targetSockets.length === 0) {
-      const activeAcc = accountId ? accountsMap.get(accountId) : getActiveAccount();
-      const targetSock = activeAcc?.sock || sock;
-      const isAccConnected = activeAcc ? activeAcc.status === 'connected' : connectionStatus === 'connected';
-
-      if (!isAccConnected || !targetSock) {
-        return res.status(400).json({ error: 'WhatsApp is not connected. Link your device first.' });
+      const targetAcc = getAccount(accountId || activeAccountId);
+      if (!targetAcc.sock || targetAcc.status !== 'connected') {
+        return res.status(400).json({ error: `Account "${targetAcc.label}" is not connected. Link your device first.` });
       }
-
       targetSockets.push({
-        id: activeAcc?.id || 'primary',
-        label: activeAcc?.label || (activePhone ? `+${activePhone}` : 'Primary Account'),
-        sockInstance: targetSock
+        id: targetAcc.id,
+        label: targetAcc.label,
+        sockInstance: targetAcc.sock
       });
     }
 
-    // Prepare recipient audience
     const targetJids = getTargetStatusJids(targetTags, targetContactJids);
     const audienceDesc = targetTags && targetTags.length > 0 
       ? `Tagged contacts [${targetTags.join(', ')}] (${targetJids.length} contacts)`
@@ -1395,7 +1771,6 @@ app.post('/api/status/post', async (req: Request, res: Response) => {
             caption: effectiveText
           }, msgOptions);
         } else {
-          // Pure text status with styled background color and font
           await item.sockInstance.sendMessage('status@broadcast', {
             text: effectiveText,
             backgroundColor: parseColorToArgb(backgroundColor),
@@ -1414,7 +1789,7 @@ app.post('/api/status/post', async (req: Request, res: Response) => {
 
     const anySuccess = sendResults.some(r => r.success);
     if (anySuccess) {
-      stats.broadcastsSent++;
+      globalStats.broadcastsSent++;
       
       const historyItem: BroadcastHistoryItem = {
         id: 'bcast_' + Date.now().toString(36),
@@ -1458,7 +1833,7 @@ app.get('/api/status/broadcast-history', (req: Request, res: Response) => {
   res.json({
     success: true,
     history: broadcastHistory,
-    totalBroadcasts: stats.broadcastsSent
+    totalBroadcasts: globalStats.broadcastsSent
   });
 });
 
@@ -1472,8 +1847,8 @@ app.delete('/api/status/broadcast-history', (req: Request, res: Response) => {
 app.get('/api/status/viewed-log', (req: Request, res: Response) => {
   res.json({
     statuses: viewedStatusesLog,
-    totalViewed: stats.statusesViewed,
-    totalReacted: stats.reactionsSent
+    totalViewed: globalStats.statusesViewed,
+    totalReacted: globalStats.reactionsSent
   });
 });
 
@@ -1550,21 +1925,28 @@ app.delete('/api/ad-network/adverts/:id', (req: Request, res: Response) => {
 });
 
 // 8. GROUP MANAGEMENT & CONTACT TAGGING APIS
-
-// Fetch all joined groups
 app.get('/api/groups', async (req: Request, res: Response) => {
   try {
-    if (connectionStatus !== 'connected' || !sock) {
-      return res.status(400).json({ error: 'WhatsApp is not connected.' });
+    const { accountId } = req.query;
+    let targetAcc = getAccount(String(accountId || ''));
+
+    // If specified account is not connected, try to find any connected account
+    if (!targetAcc.sock || targetAcc.status !== 'connected') {
+      const anyConnected = Array.from(accountsMap.values()).find(a => a.sock && a.status === 'connected');
+      if (anyConnected) {
+        targetAcc = anyConnected;
+      } else {
+        return res.status(400).json({ error: 'WhatsApp is not connected on any account.' });
+      }
     }
 
-    const groupsData = await sock.groupFetchAllParticipating();
-    const botJid = sock.user?.id?.split(':')[0] + '@s.whatsapp.net';
+    const groupsData = await targetAcc.sock.groupFetchAllParticipating();
+    const botJid = targetAcc.sock.user?.id?.split(':')[0] + '@s.whatsapp.net';
+    const currentPhone = targetAcc.phone;
 
     const groupList = Object.values(groupsData).map((g: any) => {
-      const isBotAdmin = !!g.participants?.find((p: any) => (p.id === botJid || (activePhone && p.id?.includes(activePhone))) && (p.admin === 'admin' || p.admin === 'superadmin'));
+      const isBotAdmin = !!g.participants?.find((p: any) => (p.id === botJid || (currentPhone && p.id?.includes(currentPhone))) && (p.admin === 'admin' || p.admin === 'superadmin'));
       
-      // Auto-index participants into contactsMap
       if (Array.isArray(g.participants)) {
         g.participants.forEach((p: any) => {
           recordContact(p.id, undefined, g.id, g.subject || 'Unnamed Group');
@@ -1594,6 +1976,8 @@ app.get('/api/groups', async (req: Request, res: Response) => {
 
     res.json({
       success: true,
+      accountId: targetAcc.id,
+      accountLabel: targetAcc.label,
       groups: groupList
     });
   } catch (err: any) {
@@ -1602,21 +1986,26 @@ app.get('/api/groups', async (req: Request, res: Response) => {
   }
 });
 
-// Fetch detailed group metadata (including participants with tag details)
+// Fetch detailed group metadata
 app.get('/api/groups/:jid', async (req: Request, res: Response) => {
   try {
-    if (connectionStatus !== 'connected' || !sock) {
-      return res.status(400).json({ error: 'WhatsApp is not connected.' });
+    const { accountId } = req.query;
+    let targetAcc = getAccount(String(accountId || ''));
+
+    if (!targetAcc.sock || targetAcc.status !== 'connected') {
+      const anyConnected = Array.from(accountsMap.values()).find(a => a.sock && a.status === 'connected');
+      if (anyConnected) targetAcc = anyConnected;
+      else return res.status(400).json({ error: 'WhatsApp is not connected.' });
     }
 
     const jid = req.params.jid;
-    const metadata = await sock.groupMetadata(jid);
-    const botJid = sock.user?.id?.split(':')[0] + '@s.whatsapp.net';
-    const isBotAdmin = !!metadata.participants?.find((p: any) => (p.id === botJid || (activePhone && p.id?.includes(activePhone))) && (p.admin === 'admin' || p.admin === 'superadmin'));
+    const metadata = await targetAcc.sock.groupMetadata(jid);
+    const botJid = targetAcc.sock.user?.id?.split(':')[0] + '@s.whatsapp.net';
+    const currentPhone = targetAcc.phone;
+    const isBotAdmin = !!metadata.participants?.find((p: any) => (p.id === botJid || (currentPhone && p.id?.includes(currentPhone))) && (p.admin === 'admin' || p.admin === 'superadmin'));
 
     const groupTags = groupTagsMap.get(jid) || [];
 
-    // Map participants with contact tag data
     const enrichedParticipants = (metadata.participants || []).map((p: any) => {
       const contact = recordContact(p.id, undefined, metadata.id, metadata.subject);
       return {
@@ -1692,7 +2081,6 @@ app.post('/api/tags', (req: Request, res: Response) => {
       tagDefinitions = tagDefinitions.filter(t => t.id !== id);
       saveTagsToFile();
       
-      // Remove deleted tag from contacts
       contactsMap.forEach(c => {
         if (c.tags.includes(id)) {
           c.tags = c.tags.filter(t => t !== id);
@@ -1784,22 +2172,24 @@ app.post('/api/contacts/tag', (req: Request, res: Response) => {
   }
 });
 
-// Group Tagging (Tag group itself + optionally tag all group participants)
+// Group Tagging
 app.post('/api/contacts/group-tag', async (req: Request, res: Response) => {
   try {
-    const { jid, groupSubject, tags = [], tagParticipants = true } = req.body;
+    const { jid, groupSubject, tags = [], tagParticipants = true, accountId } = req.body;
     if (!jid) return res.status(400).json({ error: 'Provide group jid.' });
 
     groupTagsMap.set(jid, tags);
     saveGroupTagsToFile();
 
+    const targetAcc = getAccount(accountId);
     let participantsTaggedCount = 0;
-    if (tagParticipants && sock) {
+
+    if (tagParticipants && targetAcc.sock && targetAcc.status === 'connected') {
       try {
-        const metadata = await sock.groupMetadata(jid);
+        const metadata = await targetAcc.sock.groupMetadata(jid);
         if (metadata && metadata.participants) {
           metadata.participants.forEach((p: any) => {
-            const contact = recordContact(p.id, undefined, jid, groupSubject || metadata.subject, tags);
+            recordContact(p.id, undefined, jid, groupSubject || metadata.subject, tags);
             participantsTaggedCount++;
           });
           saveContactsToFile();
@@ -1820,7 +2210,7 @@ app.post('/api/contacts/group-tag', async (req: Request, res: Response) => {
   }
 });
 
-// Edit Contact Info (Name, Notes, Tags)
+// Edit Contact Info
 app.post('/api/contacts/edit', (req: Request, res: Response) => {
   try {
     const { jid, name, notes, tags } = req.body;
@@ -1842,29 +2232,27 @@ app.post('/api/contacts/edit', (req: Request, res: Response) => {
 });
 
 // 8B. CONTACT GAIN & VCF GENERATION APIS
-
-// Generate VCF Data for a Group or Tagged Contacts
 app.post('/api/contacts/vcf/generate', async (req: Request, res: Response) => {
   try {
     const { 
       jid, 
-      groupJids = [], 
-      contactJids = [], 
       tagIds = [], 
+      contactJids = [], 
       prefix, 
       excludeBot = true,
-      includeAdminsOnly = false 
+      includeAdminsOnly = false,
+      accountId
     } = req.body;
 
     let targetContacts: { phone: string; name: string; org?: string; note?: string }[] = [];
     let groupSubject = 'WhatsApp Contacts';
 
-    const botPhone = activePhone || sock?.user?.id?.split(':')[0]?.split('@')[0];
+    const targetAcc = getAccount(accountId);
+    const botPhone = targetAcc.phone;
 
-    // Case 1: Single Group VCF Generation
     if (jid) {
-      if (sock && connectionStatus === 'connected') {
-        const metadata = await sock.groupMetadata(jid);
+      if (targetAcc.sock && targetAcc.status === 'connected') {
+        const metadata = await targetAcc.sock.groupMetadata(jid);
         groupSubject = metadata.subject || 'WhatsApp Group';
         const cleanGroupName = groupSubject.replace(/[^\w\s-]/g, '').trim();
 
@@ -1887,7 +2275,6 @@ app.post('/api/contacts/vcf/generate', async (req: Request, res: Response) => {
           });
         });
       } else {
-        // Fallback to indexed contacts
         const groupMembers = Array.from(contactsMap.values()).filter(c => c.groupJids?.includes(jid));
         groupMembers.forEach((c, idx) => {
           const contactPrefix = prefix !== undefined ? prefix : '[Gain] ';
@@ -1898,9 +2285,7 @@ app.post('/api/contacts/vcf/generate', async (req: Request, res: Response) => {
           });
         });
       }
-    } 
-    // Case 2: Tag-Based Contacts VCF Generation
-    else if (tagIds.length > 0) {
+    } else if (tagIds.length > 0) {
       const tagged = Array.from(contactsMap.values()).filter(c => 
         c.tags?.some(t => tagIds.includes(t))
       );
@@ -1913,9 +2298,7 @@ app.post('/api/contacts/vcf/generate', async (req: Request, res: Response) => {
         });
       });
       groupSubject = `Tagged Contacts (${tagIds.join('_')})`;
-    }
-    // Case 3: Explicit Contact JIDs
-    else if (contactJids.length > 0) {
+    } else if (contactJids.length > 0) {
       contactJids.forEach((cJid: string, idx: number) => {
         const c = contactsMap.get(cJid) || recordContact(cJid);
         const contactPrefix = prefix !== undefined ? prefix : '[Gain] ';
@@ -1943,7 +2326,7 @@ app.post('/api/contacts/vcf/generate', async (req: Request, res: Response) => {
   }
 });
 
-// Send VCF File Directly Into WhatsApp Group for all members to download & save
+// Send VCF File Directly Into WhatsApp Group
 app.post('/api/contacts/vcf/send-group', async (req: Request, res: Response) => {
   try {
     const { 
@@ -1952,20 +2335,22 @@ app.post('/api/contacts/vcf/send-group', async (req: Request, res: Response) => 
       prefix, 
       customCaption, 
       excludeBot = true, 
-      includeAdminsOnly = false 
+      includeAdminsOnly = false,
+      accountId
     } = req.body;
 
     if (!jid) return res.status(400).json({ error: 'Provide group jid.' });
-    if (connectionStatus !== 'connected' || !sock) {
-      return res.status(400).json({ error: 'WhatsApp is not connected.' });
+    const targetAcc = getAccount(accountId);
+    if (!targetAcc.sock || targetAcc.status !== 'connected') {
+      return res.status(400).json({ error: `WhatsApp is not connected for "${targetAcc.label}".` });
     }
 
-    addLog(`📁 Generating Contact Gain VCF for group ${jid.split('@')[0]}...`, 'info', 'group');
+    addLog(`📁 [${targetAcc.label}] Generating Contact Gain VCF for group ${jid.split('@')[0]}...`, 'info', 'group');
 
-    const metadata = await sock.groupMetadata(jid);
+    const metadata = await targetAcc.sock.groupMetadata(jid);
     const subject = groupSubject || metadata.subject || 'Group Contacts';
     const cleanGroupName = subject.replace(/[^\w\s-]/g, '').trim();
-    const botPhone = activePhone || sock.user?.id?.split(':')[0]?.split('@')[0];
+    const botPhone = targetAcc.phone;
 
     const targetContacts: { phone: string; name: string; org?: string; note?: string }[] = [];
 
@@ -2003,16 +2388,16 @@ app.post('/api/contacts/vcf/send-group', async (req: Request, res: Response) => 
 
     const captionToSend = customCaption?.trim() || defaultCaption;
 
-    // Send Document via Baileys
-    await sock.sendMessage(jid, {
+    await targetAcc.sock.sendMessage(jid, {
       document: vcfBuffer,
       mimetype: 'text/vcard',
       fileName: safeFileName,
       caption: captionToSend
     });
 
-    stats.broadcastsSent++;
-    addLog(`📁✓ Contact Gain VCF (${targetContacts.length} contacts) sent successfully to group "${subject}"!`, 'success', 'group');
+    globalStats.broadcastsSent++;
+    targetAcc.stats.broadcastsSent++;
+    addLog(`📁✓ Contact Gain VCF (${targetContacts.length} contacts) sent successfully to "${subject}" from ${targetAcc.label}!`, 'success', 'group');
     broadcastStateUpdate();
 
     res.json({
@@ -2032,12 +2417,14 @@ app.post('/api/contacts/vcf/send-group', async (req: Request, res: Response) => 
 // Direct Download VCF File
 app.get('/api/contacts/vcf/download', async (req: Request, res: Response) => {
   try {
-    const { jid, tag, prefix } = req.query;
+    const { jid, tag, prefix, accountId } = req.query;
     let targetContacts: { phone: string; name: string; org?: string }[] = [];
     let title = 'contacts';
 
-    if (jid && sock && connectionStatus === 'connected') {
-      const metadata = await sock.groupMetadata(String(jid));
+    const targetAcc = getAccount(String(accountId || ''));
+
+    if (jid && targetAcc.sock && targetAcc.status === 'connected') {
+      const metadata = await targetAcc.sock.groupMetadata(String(jid));
       title = (metadata.subject || 'group').replace(/[^\w\s-]/g, '').trim();
       (metadata.participants || []).forEach((p: any, idx: number) => {
         const rawPhone = p.id.split('@')[0].replace(/[^0-9]/g, '');
@@ -2080,20 +2467,21 @@ app.get('/api/contacts/vcf/download', async (req: Request, res: Response) => {
   }
 });
 
-// Update group participants (promote / demote / remove)
+// Update group participants
 app.post('/api/groups/participants', async (req: Request, res: Response) => {
   try {
-    const { jid, targetJid, action } = req.body;
+    const { jid, targetJid, action, accountId } = req.body;
     if (!jid || !targetJid || !action) {
       return res.status(400).json({ error: 'Provide jid, targetJid, and action (promote|demote|remove).' });
     }
 
-    if (connectionStatus !== 'connected' || !sock) {
-      return res.status(400).json({ error: 'WhatsApp is not connected.' });
+    const targetAcc = getAccount(accountId);
+    if (!targetAcc.sock || targetAcc.status !== 'connected') {
+      return res.status(400).json({ error: `WhatsApp is not connected on "${targetAcc.label}".` });
     }
 
     const formattedTarget = targetJid.includes('@') ? targetJid : `${targetJid.replace(/[^0-9]/g, '')}@s.whatsapp.net`;
-    const response = await sock.groupParticipantsUpdate(jid, [formattedTarget], action);
+    const response = await targetAcc.sock.groupParticipantsUpdate(jid, [formattedTarget], action);
 
     addLog(`Group action "${action}" on participant ${formattedTarget} in group ${jid}`, 'info', 'group');
     res.json({ success: true, response });
@@ -2103,19 +2491,20 @@ app.post('/api/groups/participants', async (req: Request, res: Response) => {
   }
 });
 
-// Update group settings (announcement lock / info edit)
+// Update group settings
 app.post('/api/groups/settings', async (req: Request, res: Response) => {
   try {
-    const { jid, setting } = req.body;
+    const { jid, setting, accountId } = req.body;
     if (!jid || !setting) {
       return res.status(400).json({ error: 'Provide jid and setting.' });
     }
 
-    if (connectionStatus !== 'connected' || !sock) {
-      return res.status(400).json({ error: 'WhatsApp is not connected.' });
+    const targetAcc = getAccount(accountId);
+    if (!targetAcc.sock || targetAcc.status !== 'connected') {
+      return res.status(400).json({ error: `WhatsApp is not connected on "${targetAcc.label}".` });
     }
 
-    await sock.groupSettingUpdate(jid, setting);
+    await targetAcc.sock.groupSettingUpdate(jid, setting);
     addLog(`Updated group ${jid} setting to "${setting}"`, 'info', 'group');
     res.json({ success: true, message: `Group setting updated to ${setting}.` });
   } catch (err: any) {
@@ -2126,24 +2515,25 @@ app.post('/api/groups/settings', async (req: Request, res: Response) => {
 // Get group invite code
 app.post('/api/groups/invite-code', async (req: Request, res: Response) => {
   try {
-    const { jid } = req.body;
+    const { jid, accountId } = req.body;
     if (!jid) return res.status(400).json({ error: 'Provide group jid.' });
 
-    if (connectionStatus !== 'connected' || !sock) {
-      return res.status(400).json({ error: 'WhatsApp is not connected.' });
+    const targetAcc = getAccount(accountId);
+    if (!targetAcc.sock || targetAcc.status !== 'connected') {
+      return res.status(400).json({ error: `WhatsApp is not connected on "${targetAcc.label}".` });
     }
 
-    const code = await sock.groupInviteCode(jid);
+    const code = await targetAcc.sock.groupInviteCode(jid);
     res.json({ success: true, code, link: `https://chat.whatsapp.com/${code}` });
   } catch (err: any) {
     res.status(500).json({ error: err.message || 'Failed to get invite code. Ensure bot is group admin.' });
   }
 });
 
-// Image Upload Endpoint (stores or returns data URL / local asset)
+// Image Upload Endpoint
 app.post('/api/upload-image', (req: Request, res: Response) => {
   try {
-    const { dataUrl, fileName } = req.body;
+    const { dataUrl } = req.body;
     if (!dataUrl) return res.status(400).json({ error: 'Provide dataUrl.' });
     res.json({ success: true, url: dataUrl });
   } catch (err: any) {
@@ -2151,7 +2541,7 @@ app.post('/api/upload-image', (req: Request, res: Response) => {
   }
 });
 
-// 9. AUTOMATED MULTI-GROUP & TAGGED CONTACT BROADCAST CAMPAIGN ENGINE (ANTI-BAN SAFEGUARDS)
+// 9. AUTOMATED MULTI-GROUP & TAGGED CONTACT BROADCAST CAMPAIGN ENGINE
 
 // Spintax Preview API
 app.post('/api/campaigns/spintax-preview', (req: Request, res: Response) => {
@@ -2165,7 +2555,7 @@ app.post('/api/campaigns/spintax-preview', (req: Request, res: Response) => {
   res.json({ samples });
 });
 
-// Start Campaign (Supports Groups or Tagged Contacts Direct Broadcast)
+// Start Campaign
 app.post('/api/campaigns/start', async (req: Request, res: Response) => {
   try {
     const {
@@ -2178,14 +2568,15 @@ app.post('/api/campaigns/start', async (req: Request, res: Response) => {
       minDelaySec = 15,
       maxDelaySec = 35,
       batchSize = 10,
-      batchPauseMinutes = 3
+      batchPauseMinutes = 3,
+      accountId
     } = req.body;
 
-    if (connectionStatus !== 'connected' || !sock) {
-      return res.status(400).json({ error: 'WhatsApp is not connected. Connect account first.' });
+    const targetAcc = getAccount(accountId);
+    if (!targetAcc.sock || targetAcc.status !== 'connected') {
+      return res.status(400).json({ error: `WhatsApp is not connected on "${targetAcc.label}". Connect account first.` });
     }
 
-    // Resolve target JIDs based on targetMode
     let resolvedTargetJids: string[] = [];
     if (targetMode === 'tagged_contacts' || targetMode === 'direct_contacts') {
       if (targetTags.length > 0) {
@@ -2245,10 +2636,10 @@ app.post('/api/campaigns/start', async (req: Request, res: Response) => {
       ? `Tagged Contacts [${targetTags.join(', ')}] (${resolvedTargetJids.length} recipients)`
       : `${resolvedTargetJids.length} Groups`;
 
-    addLog(`🚀 Started Broadcast Campaign across ${targetDesc} with Anti-Ban safeguards.`, 'info', 'campaign');
+    addLog(`🚀 [${targetAcc.label}] Started Broadcast Campaign across ${targetDesc} with Anti-Ban safeguards.`, 'info', 'campaign');
     broadcastStateUpdate();
 
-    runCampaignStep();
+    runCampaignStep(targetAcc.id);
 
     res.json({ success: true, campaign: currentCampaign });
   } catch (err: any) {
@@ -2256,8 +2647,16 @@ app.post('/api/campaigns/start', async (req: Request, res: Response) => {
   }
 });
 
-async function runCampaignStep() {
+async function runCampaignStep(accountId?: string) {
   if (currentCampaign.status !== 'running') return;
+
+  const targetAcc = getAccount(accountId);
+  if (!targetAcc.sock || targetAcc.status !== 'connected') {
+    currentCampaign.status = 'error';
+    addLog(`❌ Campaign aborted: WhatsApp socket on "${targetAcc.label}" disconnected.`, 'error', 'campaign');
+    broadcastStateUpdate();
+    return;
+  }
 
   const targetList = currentCampaign.targetMode === 'tagged_contacts' || currentCampaign.targetMode === 'direct_contacts'
     ? (currentCampaign.targetContactJids || [])
@@ -2275,7 +2674,6 @@ async function runCampaignStep() {
   currentCampaign.currentGroupJid = jid;
 
   try {
-    // Dynamic Personalization Variables Replacement for Tagged Contacts
     let rawText = currentCampaign.templateText || '';
     if (currentCampaign.targetMode === 'tagged_contacts' || currentCampaign.targetMode === 'direct_contacts') {
       const contact = contactsMap.get(jid) || recordContact(jid);
@@ -2294,18 +2692,19 @@ async function runCampaignStep() {
     
     if (currentCampaign.imageUrl) {
       const imgPayload = prepareMediaPayload(currentCampaign.imageUrl, 'image');
-      await sock.sendMessage(jid, {
+      await targetAcc.sock.sendMessage(jid, {
         ...imgPayload,
         caption: messageContent
       });
     } else {
-      await sock.sendMessage(jid, {
+      await targetAcc.sock.sendMessage(jid, {
         text: messageContent
       });
     }
 
     currentCampaign.sentCount++;
-    stats.campaignMessagesSent++;
+    globalStats.campaignMessagesSent++;
+    targetAcc.stats.campaignMessagesSent++;
     const recipientLabel = currentCampaign.targetMode === 'tagged_contacts' || currentCampaign.targetMode === 'direct_contacts' ? 'Contact' : 'Group';
     const progressMsg = `Sent to ${recipientLabel} ${currentCampaign.currentIndex + 1}/${targetList.length} (+${jid.split('@')[0]})`;
     currentCampaign.logs.unshift(`[${new Date().toLocaleTimeString()}] ✓ ${progressMsg}`);
@@ -2329,7 +2728,7 @@ async function runCampaignStep() {
     return;
   }
 
-  // Check Batch Pause Anti-Ban rule
+  // Anti-Ban Batch Pause
   if (currentCampaign.sentCount > 0 && currentCampaign.sentCount % currentCampaign.batchSize === 0) {
     const pauseSeconds = currentCampaign.batchPauseMinutes * 60;
     currentCampaign.status = 'batch_pausing';
@@ -2349,14 +2748,14 @@ async function runCampaignStep() {
         currentCampaign.status = 'running';
         addLog(`▶️ Batch rest period completed. Resuming campaign queue...`, 'info', 'campaign');
         broadcastStateUpdate();
-        runCampaignStep();
+        runCampaignStep(targetAcc.id);
       }
     }, 1000);
 
     return;
   }
 
-  // Randomized Pacing Jitter Delay
+  // Randomized Pacing Delay
   const delaySec = Math.floor(
     Math.random() * (currentCampaign.maxDelaySec - currentCampaign.minDelaySec + 1)
   ) + currentCampaign.minDelaySec;
@@ -2378,7 +2777,7 @@ async function runCampaignStep() {
 
   campaignIntervalTimer = setTimeout(() => {
     if (currentCampaign.status === 'running') {
-      runCampaignStep();
+      runCampaignStep(targetAcc.id);
     }
   }, delaySec * 1000);
 }
@@ -2403,7 +2802,7 @@ app.post('/api/campaigns/resume', (req: Request, res: Response) => {
     currentCampaign.status = 'running';
     addLog('▶️ Resuming campaign queue...', 'info', 'campaign');
     broadcastStateUpdate();
-    runCampaignStep();
+    runCampaignStep(activeAccountId);
     res.json({ success: true, campaign: currentCampaign });
   } else {
     res.status(400).json({ error: 'Campaign is not paused.' });
@@ -2447,7 +2846,7 @@ app.post('/api/config', (req: Request, res: Response) => {
 
 // 11. Activity Logs
 app.get('/api/logs', (req: Request, res: Response) => {
-  res.json({ logs: recentLogs, stats });
+  res.json({ logs: recentLogs, stats: globalStats });
 });
 
 // 12. Server-Sent Events (SSE) Stream
@@ -2463,17 +2862,18 @@ app.get('/api/logs/stream', (req: Request, res: Response) => {
 
   res.write(`data: ${JSON.stringify({
     type: 'init',
-    status: connectionStatus,
-    phase: connectionPhase,
-    phone: activePhone,
-    name: activePushName,
-    hasQr: !!qrCodeDataUrl,
-    qr: qrCodeDataUrl,
+    status: activeAcc.status,
+    phase: activeAcc.phase,
+    phone: activeAcc.phone,
+    name: activeAcc.name,
+    hasQr: !!activeAcc.qr,
+    qr: activeAcc.qr,
+    pairingCode: activeAcc.pairingCode,
     logs: recentLogs.slice(0, 50),
-    stats,
+    stats: globalStats,
     config,
     campaign: currentCampaign,
-    activeAccountId: activeAcc?.id,
+    activeAccountId,
     accounts: accountsList
   })}\n\n`);
 
@@ -2503,7 +2903,6 @@ async function startServer() {
       });
       app.use(vite.middlewares);
 
-      // Explicit SPA fallback route to render index.html with Vite transforms
       app.use('*', async (req, res, next) => {
         const url = req.originalUrl;
         if (url.startsWith('/api')) return next();
@@ -2534,10 +2933,10 @@ async function startServer() {
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`====================================================`);
     console.log(`🚀 WhatsApp Growth & Automation Engine Online!`);
-    console.log(`📡 Server listening on http://0.0.0.0:${PORT}`);
+    console.log(`📡 Multi-Account Manager active on http://0.0.0.0:${PORT}`);
     console.log(`====================================================`);
     
-    initWhatsApp(false);
+    startAllAccounts();
   });
 }
 
