@@ -28,3 +28,99 @@ html, body, #root {
 ::-webkit-scrollbar-thumb:hover {
   background: #2a3942;
 }
+
+/* Light Theme Overrides (WhatsApp Web Light Palette) */
+html.light,
+body.light,
+.light {
+  color-scheme: light;
+  background-color: #f0f2f5 !important;
+  color: #0f172a !important;
+}
+
+.light ::-webkit-scrollbar-track {
+  background: #f0f2f5;
+}
+.light ::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+}
+.light ::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+.light .bg-\[\#0b141a\] {
+  background-color: #f0f2f5 !important;
+}
+.light .bg-\[\#111b21\] {
+  background-color: #ffffff !important;
+}
+.light .bg-\[\#111b21\]\/95 {
+  background-color: rgba(255, 255, 255, 0.95) !important;
+}
+.light .bg-\[\#111b21\]\/90 {
+  background-color: rgba(255, 255, 255, 0.92) !important;
+}
+.light .bg-\[\#111b21\]\/80 {
+  background-color: rgba(255, 255, 255, 0.85) !important;
+}
+.light .bg-\[\#111b21\]\/60 {
+  background-color: rgba(255, 255, 255, 0.65) !important;
+}
+.light .bg-\[\#111b21\]\/50 {
+  background-color: rgba(255, 255, 255, 0.55) !important;
+}
+.light .bg-\[\#1a2730\] {
+  background-color: #f1f5f9 !important;
+}
+.light .hover\:bg-\[\#1a2730\]:hover {
+  background-color: #e2e8f0 !important;
+}
+.light .hover\:bg-\[\#1f2c34\]:hover {
+  background-color: #e2e8f0 !important;
+}
+.light .hover\:bg-\[\#202c33\]:hover {
+  background-color: #e2e8f0 !important;
+}
+.light .border-\[\#202c33\] {
+  border-color: #e2e8f0 !important;
+}
+.light .border-\[\#202c33\]\/60,
+.light .border-\[\#202c33\]\/40 {
+  border-color: #f1f5f9 !important;
+}
+.light .divide-\[\#202c33\] > :not([hidden]) ~ :not([hidden]),
+.light .divide-\[\#202c33\]\/40 > :not([hidden]) ~ :not([hidden]) {
+  border-color: #e2e8f0 !important;
+}
+
+.light .text-white {
+  color: #0f172a !important;
+}
+.light .text-slate-100 {
+  color: #0f172a !important;
+}
+.light .text-slate-200 {
+  color: #1e293b !important;
+}
+.light .text-slate-300 {
+  color: #334155 !important;
+}
+.light .text-slate-400 {
+  color: #64748b !important;
+}
+.light .text-slate-500 {
+  color: #64748b !important;
+}
+
+/* Light Mode Input Enhancements */
+.light input:not([type="checkbox"]):not([type="radio"]),
+.light textarea,
+.light select {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+  border-color: #cbd5e1 !important;
+}
+.light input::placeholder,
+.light textarea::placeholder {
+  color: #94a3b8 !important;
+}

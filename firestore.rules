@@ -70,6 +70,24 @@ service cloud.firestore {
         data.status in ['pending', 'approved', 'active', 'completed', 'rejected'];
     }
 
+    function isValidCampaign(data) {
+      return data.keys().hasAll(['id', 'userId', 'name', 'templateText', 'enabled']) &&
+        data.id is string && data.id.size() <= 128 &&
+        data.userId is string && data.userId.size() <= 128 &&
+        data.name is string && data.name.size() <= 256 &&
+        data.templateText is string && data.templateText.size() <= 10000 &&
+        data.enabled is bool;
+    }
+
+    function isValidAdvertPitch(data) {
+      return data.keys().hasAll(['id', 'targetHostUid', 'title', 'advertContent', 'status', 'submittedAt']) &&
+        data.id is string && data.id.size() <= 128 &&
+        data.targetHostUid is string && data.targetHostUid.size() <= 128 &&
+        data.title is string && data.title.size() <= 256 &&
+        data.advertContent is string && data.advertContent.size() <= 10000 &&
+        data.status in ['pending_approval', 'approved', 'rejected'];
+    }
+
     // 1. Users Collection
     match /users/{userId} {
       allow read: if true;
@@ -79,6 +97,14 @@ service cloud.firestore {
         (isValidUserProfile(incoming()) && (isSignedIn() ? (isOwner(userId) && incoming().uid == existing().uid) : true))
       );
       allow delete: if isAdmin();
+
+      // User campaigns subcollection
+      match /campaigns/{campaignId} {
+        allow read: if isSignedIn() ? (isOwner(userId) || isAdmin()) : true;
+        allow create: if isValidCampaign(incoming()) && (isSignedIn() ? (isOwner(userId) && incoming().userId == request.auth.uid) : true);
+        allow update: if isValidCampaign(incoming()) && (isSignedIn() ? (isOwner(userId) && incoming().userId == existing().userId) : true);
+        allow delete: if isSignedIn() ? (isOwner(userId) || isAdmin()) : true;
+      }
     }
 
     // 2. Admins Collection
@@ -112,6 +138,34 @@ service cloud.firestore {
         (isSignedIn() ? (existing().creatorUid == request.auth.uid && incoming().creatorUid == existing().creatorUid) : true)
       );
       allow delete: if isSignedIn() ? (existing().creatorUid == request.auth.uid || isAdmin()) : true;
+    }
+
+    // 6. Global Campaigns Collection (for background cloud execution and syncing)
+    match /campaigns/{campaignId} {
+      allow read: if true;
+      allow create: if isValidCampaign(incoming()) && (isSignedIn() ? (incoming().userId == request.auth.uid || isAdmin()) : true);
+      allow update: if isValidCampaign(incoming()) && (
+        isAdmin() || 
+        (isSignedIn() ? (existing().userId == request.auth.uid && incoming().userId == existing().userId) : true)
+      );
+      allow delete: if isSignedIn() ? (existing().userId == request.auth.uid || isAdmin()) : true;
+    }
+
+    // 7. Platform Feature Configs (Managed exclusively by Admin)
+    match /config/{configId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // 8. Inbound Sponsor & Advert Pitches (Submitted via personal promoter link)
+    match /advert_pitches/{pitchId} {
+      allow read: if true;
+      allow create: if isValidAdvertPitch(incoming());
+      allow update: if isValidAdvertPitch(incoming()) && (
+        isAdmin() || 
+        (isSignedIn() && (resource.data.targetHostUid == request.auth.uid || incoming().targetHostUid == request.auth.uid))
+      );
+      allow delete: if isSignedIn() && (resource.data.targetHostUid == request.auth.uid || isAdmin());
     }
 
   }

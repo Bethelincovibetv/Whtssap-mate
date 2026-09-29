@@ -51,6 +51,7 @@ import {
   YAxis,
   CartesianGrid
 } from 'recharts';
+import { User } from 'firebase/auth';
 import { 
   EngineStatusResponse, 
   GroupItem, 
@@ -59,10 +60,16 @@ import {
   TagDefinition,
   ContactItem 
 } from '../types';
+import { 
+  saveCampaignToFirebase, 
+  deleteCampaignFromFirebase, 
+  loadUserCampaignsFromFirebase 
+} from '../lib/campaignFirestore';
 
 interface CampaignTabProps {
   statusData: EngineStatusResponse | null;
   onRefresh: () => void;
+  currentUser?: User | null;
   preloadOptions?: {
     mode?: 'groups' | 'tagged_contacts';
     targetGroupJids?: string[];
@@ -73,6 +80,7 @@ interface CampaignTabProps {
 export const CampaignTab: React.FC<CampaignTabProps> = ({ 
   statusData, 
   onRefresh,
+  currentUser,
   preloadOptions 
 }) => {
   // Campaign Mode: Target Groups vs Target Categorized Contacts by Tag
@@ -112,18 +120,42 @@ export const CampaignTab: React.FC<CampaignTabProps> = ({
   const [startingCampaign, setStartingCampaign] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [tagAllMembers, setTagAllMembers] = useState<boolean>(true);
 
   // 24/7 Automated Recurring Campaign Settings
   const [activeViewTab, setActiveViewTab] = useState<'composer' | 'scheduled'>('composer');
   const [campaignName, setCampaignName] = useState('24/7 Auto Promo');
   const [repeatEnabled, setRepeatEnabled] = useState(true);
-  const [repeatIntervalHours, setRepeatIntervalHours] = useState(2);
+  const [repeatIntervalMinutes, setRepeatIntervalMinutes] = useState(5); // Default to 5 minutes (user requested 1, 3, 5 minutes)
+  const [repeatIntervalHours, setRepeatIntervalHours] = useState(1);
   const [maxIterations, setMaxIterations] = useState(0); // 0 = infinite
   const [scheduledCampaigns, setScheduledCampaigns] = useState<ScheduledCampaign[]>([]);
   const [loadingScheduled, setLoadingScheduled] = useState(false);
   const [savingScheduled, setSavingScheduled] = useState(false);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [successToast, setSuccessToast] = useState<string | null>(null);
+
+  // Account Jobs State
+  const [accountJobsList, setAccountJobsList] = useState<any[]>([]);
+  const [loadingAccountJobs, setLoadingAccountJobs] = useState<boolean>(false);
+
+  const fetchAccountJobs = useCallback(async () => {
+    const accId = statusData?.activeAccountId || 'acc_primary';
+    setLoadingAccountJobs(true);
+    try {
+      const res = await fetch(`/api/accounts/${accId}/jobs`);
+      const data = await res.json();
+      if (data.jobs) setAccountJobsList(data.jobs);
+    } catch (e) {
+      console.warn('Error loading account jobs:', e);
+    } finally {
+      setLoadingAccountJobs(false);
+    }
+  }, [statusData?.activeAccountId]);
+
+  useEffect(() => {
+    fetchAccountJobs();
+  }, [fetchAccountJobs]);
 
   // Apply Preload Options from Group Manager if passed
   useEffect(() => {
@@ -312,6 +344,7 @@ export const CampaignTab: React.FC<CampaignTabProps> = ({
         targetTags: campaignMode === 'tagged_contacts' ? selectedTags : [],
         templateText,
         imageUrl,
+        tagAllMembers: tagAllMembers,
         minDelaySec,
         maxDelaySec,
         batchSize,
@@ -357,17 +390,38 @@ export const CampaignTab: React.FC<CampaignTabProps> = ({
   const fetchScheduledCampaigns = useCallback(async () => {
     setLoadingScheduled(true);
     try {
-      const res = await fetch('/api/campaigns/scheduled');
+      const userParam = currentUser?.uid ? `?userId=${currentUser.uid}` : '';
+      const res = await fetch(`/api/campaigns/scheduled${userParam}`);
       const data = await res.json();
-      if (data.campaigns) {
-        setScheduledCampaigns(data.campaigns);
+      let serverCampaigns: ScheduledCampaign[] = data.campaigns || [];
+
+      // If user is authenticated, sync with Firebase Firestore under their account
+      if (currentUser?.uid) {
+        try {
+          const fbCampaigns = await loadUserCampaignsFromFirebase(currentUser.uid);
+          if (fbCampaigns && fbCampaigns.length > 0) {
+            await fetch('/api/campaigns/scheduled/sync', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ campaigns: fbCampaigns, userId: currentUser.uid })
+            });
+            const map = new Map<string, ScheduledCampaign>();
+            serverCampaigns.forEach(c => map.set(c.id, c));
+            fbCampaigns.forEach(c => map.set(c.id, { ...map.get(c.id), ...c }));
+            serverCampaigns = Array.from(map.values());
+          }
+        } catch (fbErr) {
+          console.warn('Firebase user campaigns fetch note:', fbErr);
+        }
       }
+
+      setScheduledCampaigns(serverCampaigns);
     } catch (e) {
       console.error('Failed to load scheduled campaigns:', e);
     } finally {
       setLoadingScheduled(false);
     }
-  }, []);
+  }, [currentUser?.uid]);
 
   useEffect(() => {
     fetchScheduledCampaigns();
@@ -393,19 +447,25 @@ export const CampaignTab: React.FC<CampaignTabProps> = ({
     setErrorMsg(null);
     setSavingScheduled(true);
     try {
+      const minutes = Number(repeatIntervalMinutes) || 5;
+      const hours = Number((minutes / 60).toFixed(2));
       const payload = {
         name: campaignName.trim() || `Auto-Post (${selectedGroupJids.length} Groups)`,
+        userId: currentUser?.uid || undefined,
+        userEmail: currentUser?.email || undefined,
         targetMode: campaignMode,
         targetGroupJids: campaignMode === 'groups' ? selectedGroupJids : [],
         targetTags: campaignMode === 'tagged_contacts' ? selectedTags : [],
         templateText,
         imageUrl,
+        tagAllMembers: tagAllMembers,
         minDelaySec,
         maxDelaySec,
         batchSize,
         batchPauseMinutes,
         repeatEnabled,
-        repeatIntervalHours: Number(repeatIntervalHours) || 2,
+        repeatIntervalMinutes: minutes,
+        repeatIntervalHours: hours,
         maxIterations: maxIterations > 0 ? maxIterations : undefined,
         enabled: true,
         runImmediately: runNow
@@ -418,8 +478,18 @@ export const CampaignTab: React.FC<CampaignTabProps> = ({
       });
       const data = await res.json();
       if (res.ok && data.success) {
-        setSuccessToast(`Auto-Campaign "${data.campaign.name}" created! Auto-posts every ${data.campaign.repeatIntervalHours}h.`);
-        setTimeout(() => setSuccessToast(null), 4000);
+        // Persist into Firebase Firestore under user account
+        if (currentUser?.uid) {
+          try {
+            await saveCampaignToFirebase(currentUser.uid, currentUser.email || undefined, data.campaign);
+          } catch (fbErr) {
+            console.warn('Firebase campaign save note:', fbErr);
+          }
+        }
+
+        const intervalLabel = minutes < 60 ? `${minutes}m` : `${hours}h`;
+        setSuccessToast(`Auto-Campaign "${data.campaign.name}" created! Stored in Firebase & auto-posts every ${intervalLabel}.`);
+        setTimeout(() => setSuccessToast(null), 4500);
         await fetchScheduledCampaigns();
         setActiveViewTab('scheduled');
         onRefresh();
@@ -441,8 +511,16 @@ export const CampaignTab: React.FC<CampaignTabProps> = ({
       });
       const data = await res.json();
       if (res.ok && data.success) {
+        // Also remove from Firebase Firestore
+        if (currentUser?.uid) {
+          try {
+            await deleteCampaignFromFirebase(currentUser.uid, id);
+          } catch (fbErr) {
+            console.warn('Firebase campaign delete note:', fbErr);
+          }
+        }
         setScheduledCampaigns(prev => prev.filter(c => c.id !== id));
-        setSuccessToast('Campaign deleted successfully! Automated posting stopped.');
+        setSuccessToast('Campaign deleted successfully from Firebase! Automated posting stopped.');
         setTimeout(() => setSuccessToast(null), 3500);
         setDeleteConfirmId(null);
         onRefresh();
@@ -1269,6 +1347,42 @@ export const CampaignTab: React.FC<CampaignTabProps> = ({
                     ))}
                   </div>
                 )}
+
+                {/* Group Tagging (@everyone / Mention All Members) Toggle */}
+                {campaignMode === 'groups' && (
+                  <div className="p-3.5 rounded-2xl bg-gradient-to-r from-emerald-950/40 via-[#0b141a] to-[#111b21] border border-emerald-500/30 flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-8 h-8 rounded-xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center shrink-0">
+                        <Users className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <h5 className="text-xs font-bold text-white flex items-center gap-1.5">
+                          <span>📢 Tag All Group Members (@everyone)</span>
+                          <span className="px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                            HIGH AUTHORITY
+                          </span>
+                        </h5>
+                        <p className="text-[11px] text-slate-400">
+                          Directly mentions all members in every group to deliver high-priority push notifications.
+                        </p>
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => setTagAllMembers(!tagAllMembers)}
+                      className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                        tagAllMembers ? 'bg-emerald-500' : 'bg-slate-700'
+                      }`}
+                    >
+                      <span
+                        className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                          tagAllMembers ? 'translate-x-5' : 'translate-x-0'
+                        }`}
+                      />
+                    </button>
+                  </div>
+                )}
               </div>
 
               {/* Anti-Ban Pacing Controls */}
@@ -1379,32 +1493,43 @@ export const CampaignTab: React.FC<CampaignTabProps> = ({
 
                   <div>
                     <label className="block text-[11px] font-semibold text-slate-300 mb-1">
-                      Repeat Frequency Interval
+                      Repeat Frequency Interval (Minutes & Hours)
                     </label>
                     <select
-                      value={repeatIntervalHours}
-                      onChange={(e) => setRepeatIntervalHours(Number(e.target.value))}
+                      value={repeatIntervalMinutes}
+                      onChange={(e) => {
+                        const val = Number(e.target.value);
+                        setRepeatIntervalMinutes(val);
+                        setRepeatIntervalHours(Number((val / 60).toFixed(2)));
+                      }}
                       disabled={!repeatEnabled}
                       className="w-full bg-[#0b141a] border border-[#202c33] focus:border-emerald-500 rounded-xl px-3 py-2 text-xs text-white outline-none disabled:opacity-50"
                     >
-                      <option value={1}>Every 1 hour (Frequent auto-post)</option>
-                      <option value={2}>Every 2 hours (Recommended)</option>
-                      <option value={4}>Every 4 hours</option>
-                      <option value={6}>Every 6 hours</option>
-                      <option value={12}>Every 12 hours (Twice daily)</option>
-                      <option value={24}>Every 24 hours (Once daily)</option>
-                      <option value={48}>Every 48 hours (Every 2 days)</option>
+                      <option value={1}>⚡ Every 1 minute (Fast continuous posting)</option>
+                      <option value={3}>⚡ Every 3 minutes (High frequency)</option>
+                      <option value={5}>⚡ Every 5 minutes (Popular)</option>
+                      <option value={10}>Every 10 minutes</option>
+                      <option value={15}>Every 15 minutes</option>
+                      <option value={30}>Every 30 minutes</option>
+                      <option value={60}>Every 1 hour</option>
+                      <option value={120}>Every 2 hours (Recommended)</option>
+                      <option value={240}>Every 4 hours</option>
+                      <option value={360}>Every 6 hours</option>
+                      <option value={720}>Every 12 hours (Twice daily)</option>
+                      <option value={1440}>Every 24 hours (Once daily)</option>
                     </select>
                   </div>
                 </div>
 
                 {repeatEnabled && (
-                  <div className="p-3 rounded-xl bg-emerald-950/30 border border-emerald-500/20 text-[11px] text-slate-300 flex items-center justify-between">
+                  <div className="p-3 rounded-xl bg-emerald-950/30 border border-emerald-500/20 text-[11px] text-slate-300 flex items-center justify-between flex-wrap gap-2">
                     <span className="flex items-center gap-1.5 text-emerald-400 font-medium">
                       <Zap className="w-3.5 h-3.5" />
-                      The system will auto-post in groups for you automatically every {repeatIntervalHours}h!
+                      The system will auto-post in groups for you automatically every {repeatIntervalMinutes < 60 ? `${repeatIntervalMinutes} minute(s)` : `${(repeatIntervalMinutes / 60).toFixed(1).replace('.0', '')} hour(s)`}!
                     </span>
-                    <span className="text-slate-400 text-[10px]">Continuous 24/7 Loop</span>
+                    <span className="text-emerald-300 text-[10px] flex items-center gap-1 font-semibold">
+                      <span>☁️</span> Saved in Firebase User Account
+                    </span>
                   </div>
                 )}
 
@@ -1551,11 +1676,17 @@ export const CampaignTab: React.FC<CampaignTabProps> = ({
                       <div className="grid grid-cols-2 gap-2 text-[11px] pt-1">
                         <div className="bg-[#0b141a] p-2 rounded-lg border border-[#202c33]">
                           <span className="text-slate-400 block text-[10px]">Repeat Frequency</span>
-                          <span className="text-emerald-400 font-semibold">Every {sc.repeatIntervalHours} Hours</span>
+                          <span className="text-emerald-400 font-semibold">
+                            {sc.repeatIntervalMinutes && sc.repeatIntervalMinutes < 60
+                              ? `Every ${sc.repeatIntervalMinutes} Minute${sc.repeatIntervalMinutes > 1 ? 's' : ''}`
+                              : `Every ${sc.repeatIntervalHours || (sc.repeatIntervalMinutes ? Math.round(sc.repeatIntervalMinutes / 60) : 2)} Hour(s)`}
+                          </span>
                         </div>
                         <div className="bg-[#0b141a] p-2 rounded-lg border border-[#202c33]">
-                          <span className="text-slate-400 block text-[10px]">Current Progress</span>
-                          <span className="text-white font-mono font-semibold">Run #{sc.currentIteration || 0}</span>
+                          <span className="text-slate-400 block text-[10px]">Cloud Persistence</span>
+                          <span className="text-cyan-400 font-mono font-semibold flex items-center gap-1">
+                            <span>☁️</span> Firebase Stored
+                          </span>
                         </div>
                       </div>
 

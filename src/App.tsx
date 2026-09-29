@@ -15,12 +15,56 @@ import { RenderDeployTab } from './components/RenderDeployTab';
 import { PwaInstallModal } from './components/PwaInstallModal';
 import { CreateAdvertModal } from './components/CreateAdvertModal';
 import { AuthModal } from './components/AuthModal';
+import { AuthGate } from './components/AuthGate';
+import { AdminPortal } from './components/AdminPortal';
 import { usePwaInstall } from './hooks/usePwaInstall';
 import { EngineStatusResponse, ActivityLog, AdvertCampaign } from './types';
-import { auth, loginWithGoogle, logoutUser, testFirestoreConnection } from './lib/firebase';
+import { auth, loginWithGoogle, logoutUser, testFirestoreConnection, isUserAdmin } from './lib/firebase';
+import { Crown, ShieldAlert, Sparkles, Link2, Globe2, Rocket, Menu } from 'lucide-react';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<NavTabId>('landing');
+  const [activeTab, setActiveTabState] = useState<NavTabId>(() => {
+    try {
+      const saved = localStorage.getItem('wm_active_tab') as NavTabId;
+      if (saved) return saved;
+    } catch {}
+    return 'landing';
+  });
+
+  const setActiveTab = (tab: NavTabId) => {
+    setActiveTabState(tab);
+    try {
+      localStorage.setItem('wm_active_tab', tab);
+    } catch {}
+  };
+
+  const [theme, setTheme] = useState<'dark' | 'light'>(() => {
+    try {
+      return (localStorage.getItem('wm_theme') as 'dark' | 'light') || 'dark';
+    } catch {
+      return 'dark';
+    }
+  });
+
+  const toggleTheme = () => {
+    const nextTheme = theme === 'dark' ? 'light' : 'dark';
+    setTheme(nextTheme);
+    try {
+      localStorage.setItem('wm_theme', nextTheme);
+    } catch {}
+  };
+
+  // Synchronize document theme class
+  useEffect(() => {
+    if (theme === 'light') {
+      document.documentElement.classList.add('light');
+      document.body.classList.add('light');
+    } else {
+      document.documentElement.classList.remove('light');
+      document.body.classList.remove('light');
+    }
+  }, [theme]);
+
   const [statusData, setStatusData] = useState<EngineStatusResponse | null>(null);
   const [logs, setLogs] = useState<ActivityLog[]>([]);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
@@ -36,6 +80,19 @@ export default function App() {
   });
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [showCreateAdvertModal, setShowCreateAdvertModal] = useState(false);
+  const [networkStats, setNetworkStats] = useState<{
+    totalPromoters: number;
+    totalPooledGroups: number;
+    totalAudienceReach: number;
+    totalAdvertsPublished: number;
+    activeLinesOnline?: number;
+  }>({
+    totalPromoters: 4,
+    totalPooledGroups: 12,
+    totalAudienceReach: 3200,
+    totalAdvertsPublished: 18,
+    activeLinesOnline: 2
+  });
   const [campaignPreload, setCampaignPreload] = useState<{
     mode?: 'groups' | 'tagged_contacts';
     targetGroupJids?: string[];
@@ -75,6 +132,12 @@ export default function App() {
     try {
       localStorage.setItem('wm_session_user', JSON.stringify(profile));
     } catch {}
+    // Sync with backend
+    fetch('/api/user/sync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(profile)
+    }).catch(() => {});
   };
 
   const handleGoogleLogout = async () => {
@@ -87,9 +150,28 @@ export default function App() {
     }
   };
 
+  // Sync Firebase user with backend presence
+  useEffect(() => {
+    if (currentUser?.email) {
+      fetch('/api/user/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          uid: currentUser.uid,
+          email: currentUser.email,
+          displayName: currentUser.displayName || currentUser.email.split('@')[0],
+          photoURL: currentUser.photoURL || ''
+        })
+      }).catch(() => {});
+    }
+  }, [currentUser]);
+
   const fetchStatus = useCallback(async () => {
     try {
-      const res = await fetch('/api/status');
+      const q = effectiveUser?.email 
+        ? `?userEmail=${encodeURIComponent(effectiveUser.email)}&uid=${encodeURIComponent(effectiveUser.uid || '')}&displayName=${encodeURIComponent(effectiveUser.displayName || '')}`
+        : '';
+      const res = await fetch(`/api/status${q}`);
       if (res.ok) {
         const data: EngineStatusResponse = await res.json();
         setStatusData(data);
@@ -97,7 +179,7 @@ export default function App() {
     } catch (e) {
       console.warn('Engine status poll note:', e);
     }
-  }, []);
+  }, [effectiveUser]);
 
   const fetchLogs = useCallback(async () => {
     try {
@@ -110,6 +192,45 @@ export default function App() {
       console.warn('Logs poll note:', e);
     }
   }, []);
+
+  const fetchNetworkStats = useCallback(async () => {
+    try {
+      const res = await fetch('/api/network/stats');
+      if (res.ok) {
+        const data = await res.json();
+        setNetworkStats(data);
+      }
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    fetchNetworkStats();
+    const interval = setInterval(fetchNetworkStats, 3500);
+    return () => clearInterval(interval);
+  }, [fetchNetworkStats]);
+
+  // Mobile App Focus & Visibility Listener: When user minimizes the app to copy/paste code into WhatsApp,
+  // returning to the browser instantly refreshes status without losing state!
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        fetchStatus();
+        fetchLogs();
+        fetchNetworkStats();
+      }
+    };
+    const handleWindowFocus = () => {
+      fetchStatus();
+      fetchNetworkStats();
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('focus', handleWindowFocus);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('focus', handleWindowFocus);
+    };
+  }, [fetchStatus, fetchLogs, fetchNetworkStats]);
 
   // Periodic Keep-Alive Heartbeat to prevent server idling / WebSocket timeout
   useEffect(() => {
@@ -312,10 +433,12 @@ export default function App() {
         onAddAccount={handleAddAccount}
         onDisconnectAccount={handleDisconnectAccount}
         onRemoveAccount={handleRemoveAccount}
+        theme={theme}
+        onToggleTheme={toggleTheme}
       />
 
       {/* Main App Layout Wrapper with Desktop Left Margin for Sidebar */}
-      <div className="flex-1 max-w-full min-w-0 overflow-x-hidden flex flex-col lg:pl-72 xl:pl-80 transition-all duration-300">
+      <div className="flex-1 max-w-full min-w-0 overflow-x-hidden flex flex-col lg:pl-72 xl:pl-80 transition-all duration-300 pb-16 sm:pb-0">
         
         {/* Top App Bar Header */}
         <Header
@@ -332,6 +455,8 @@ export default function App() {
           onAddAccount={handleAddAccount}
           onDisconnectAccount={handleDisconnectAccount}
           onRemoveAccount={handleRemoveAccount}
+          theme={theme}
+          onToggleTheme={toggleTheme}
         />
 
         {/* Main Content Area */}
@@ -340,12 +465,47 @@ export default function App() {
             <LandingPage
               currentUser={effectiveUser}
               onLogin={handleGoogleLogin}
-              onGetStarted={() => setActiveTab('connect')}
-              onCreateAdvert={() => setShowCreateAdvertModal(true)}
+              networkStats={networkStats}
+              onGetStarted={() => {
+                if (!effectiveUser) {
+                  handleGoogleLogin();
+                } else {
+                  setActiveTab('connect');
+                }
+              }}
+              onCreateAdvert={() => {
+                if (!effectiveUser) {
+                  handleGoogleLogin();
+                } else {
+                  setShowCreateAdvertModal(true);
+                }
+              }}
             />
           )}
 
-          {activeTab === 'ad-network' && (
+          {/* Authentication Gate: User cannot access internal engine tabs without signing in */}
+          {!effectiveUser && activeTab !== 'landing' && activeTab !== 'deploy' && (
+            <AuthGate
+              onSignIn={handleGoogleLogin}
+              targetFeature={
+                activeTab === 'connect'
+                  ? 'WhatsApp Account Connection'
+                  : activeTab === 'campaign'
+                  ? '24/7 Campaign & Auto-Poster Engine'
+                  : activeTab === 'groups'
+                  ? 'Group Manager & VCF Extractor'
+                  : activeTab === 'broadcast'
+                  ? 'Story Broadcast Engine'
+                  : activeTab === 'visibility'
+                  ? 'Story Viewer & Reacts Engine'
+                  : activeTab === 'ad-network'
+                  ? 'Community Ad Network Pool'
+                  : 'Developer & Automation Features'
+              }
+            />
+          )}
+
+          {effectiveUser && activeTab === 'ad-network' && (
             <AdNetworkTab
               statusData={statusData}
               currentUser={effectiveUser}
@@ -358,7 +518,7 @@ export default function App() {
             />
           )}
 
-          {activeTab === 'connect' && (
+          {effectiveUser && activeTab === 'connect' && (
             <ConnectTab
               statusData={statusData}
               onRefresh={fetchStatus}
@@ -369,13 +529,13 @@ export default function App() {
             />
           )}
 
-          {activeTab === 'api-keys' && (
+          {effectiveUser && activeTab === 'api-keys' && (
             <ApiKeysTab
               statusData={statusData}
             />
           )}
 
-          {activeTab === 'groups' && (
+          {effectiveUser && activeTab === 'groups' && (
             <GroupManagerTab
               statusData={statusData}
               onRefresh={fetchStatus}
@@ -386,29 +546,30 @@ export default function App() {
             />
           )}
 
-          {activeTab === 'campaign' && (
+          {effectiveUser && activeTab === 'campaign' && (
             <CampaignTab
               statusData={statusData}
               onRefresh={fetchStatus}
+              currentUser={effectiveUser}
               preloadOptions={campaignPreload}
             />
           )}
 
-          {activeTab === 'broadcast' && (
+          {effectiveUser && activeTab === 'broadcast' && (
             <BroadcastTab
               statusData={statusData}
               onRefresh={fetchStatus}
             />
           )}
 
-          {activeTab === 'visibility' && (
+          {effectiveUser && activeTab === 'visibility' && (
             <VisibilityTab
               statusData={statusData}
               onRefresh={fetchStatus}
             />
           )}
 
-          {activeTab === 'logs' && (
+          {effectiveUser && activeTab === 'logs' && (
             <LiveLogsTab
               logs={logs}
               stats={statusData?.stats}
@@ -419,6 +580,15 @@ export default function App() {
 
           {activeTab === 'deploy' && (
             <RenderDeployTab />
+          )}
+
+          {effectiveUser && activeTab === 'admin' && (
+            <AdminPortal
+              currentUser={effectiveUser}
+              statusData={statusData}
+              onRefreshStatus={fetchStatus}
+              onOpenRenderDeploy={() => setActiveTab('deploy')}
+            />
           )}
         </main>
 
@@ -431,10 +601,74 @@ export default function App() {
               <span>•</span>
               <span>Multi-Account Protected</span>
               <span>•</span>
-              <span>Cloud Synced</span>
+              {isUserAdmin(effectiveUser) && (
+                <button
+                  onClick={() => setActiveTab('admin')}
+                  className="text-amber-400 hover:text-amber-300 font-bold flex items-center gap-1 cursor-pointer"
+                >
+                  <Crown className="w-3 h-3 text-amber-400" />
+                  <span>Admin Portal</span>
+                </button>
+              )}
             </div>
           </div>
         </footer>
+
+        {/* Mobile Premium Bottom Navigation Bar */}
+        <nav className="sm:hidden fixed bottom-0 left-0 right-0 z-40 bg-[#111b21]/95 backdrop-blur-lg border-t border-[#202c33] px-2 py-1.5 flex items-center justify-around shadow-2xl safe-area-bottom">
+          <button
+            onClick={() => setActiveTab('landing')}
+            className={`flex flex-col items-center justify-center p-1.5 rounded-xl transition-all cursor-pointer flex-1 ${
+              activeTab === 'landing' ? 'text-emerald-400 font-bold' : 'text-slate-400 hover:text-white'
+            }`}
+          >
+            <Sparkles className="w-5 h-5 mb-0.5" />
+            <span className="text-[10px] leading-none">Home</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('connect')}
+            className={`flex flex-col items-center justify-center p-1.5 rounded-xl transition-all cursor-pointer flex-1 relative ${
+              activeTab === 'connect' ? 'text-emerald-400 font-bold' : 'text-slate-400 hover:text-white'
+            }`}
+          >
+            <Link2 className="w-5 h-5 mb-0.5" />
+            <span className="text-[10px] leading-none">Connect</span>
+            {statusData?.status === 'connected' ? (
+              <span className="absolute top-1 right-4 w-2 h-2 rounded-full bg-emerald-400 ring-2 ring-[#111b21]" />
+            ) : statusData?.status === 'connecting' ? (
+              <span className="absolute top-1 right-4 w-2 h-2 rounded-full bg-amber-400 animate-ping ring-2 ring-[#111b21]" />
+            ) : null}
+          </button>
+
+          <button
+            onClick={() => setActiveTab('ad-network')}
+            className={`flex flex-col items-center justify-center p-1.5 rounded-xl transition-all cursor-pointer flex-1 ${
+              activeTab === 'ad-network' ? 'text-emerald-400 font-bold' : 'text-slate-400 hover:text-white'
+            }`}
+          >
+            <Globe2 className="w-5 h-5 mb-0.5" />
+            <span className="text-[10px] leading-none">Ad Pool</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('campaign')}
+            className={`flex flex-col items-center justify-center p-1.5 rounded-xl transition-all cursor-pointer flex-1 ${
+              activeTab === 'campaign' ? 'text-emerald-400 font-bold' : 'text-slate-400 hover:text-white'
+            }`}
+          >
+            <Rocket className="w-5 h-5 mb-0.5" />
+            <span className="text-[10px] leading-none">Campaign</span>
+          </button>
+
+          <button
+            onClick={() => setIsSidebarOpen(true)}
+            className="flex flex-col items-center justify-center p-1.5 rounded-xl transition-all cursor-pointer flex-1 text-slate-400 hover:text-white"
+          >
+            <Menu className="w-5 h-5 mb-0.5 text-emerald-400" />
+            <span className="text-[10px] leading-none">Menu</span>
+          </button>
+        </nav>
 
       </div>
 

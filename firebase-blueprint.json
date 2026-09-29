@@ -91,12 +91,70 @@
         "approvedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["id", "creatorUid", "title", "advertContent", "status", "createdAt"]
+    },
+    "UserCampaign": {
+      "title": "UserCampaign",
+      "description": "Automated WhatsApp broadcast campaign stored in Firebase under user account",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "userEmail": { "type": "string", "maxLength": 256 },
+        "name": { "type": "string", "maxLength": 256 },
+        "targetMode": { "type": "string", "maxLength": 64 },
+        "targetGroupJids": { "type": "array" },
+        "targetContactJids": { "type": "array" },
+        "targetTags": { "type": "array" },
+        "templateText": { "type": "string", "maxLength": 10000 },
+        "imageUrl": { "type": "string", "maxLength": 5000000 },
+        "minDelaySec": { "type": "number" },
+        "maxDelaySec": { "type": "number" },
+        "batchSize": { "type": "number" },
+        "batchPauseMinutes": { "type": "number" },
+        "repeatEnabled": { "type": "boolean" },
+        "repeatIntervalMinutes": { "type": "number" },
+        "repeatIntervalHours": { "type": "number" },
+        "maxIterations": { "type": "number" },
+        "currentIteration": { "type": "number" },
+        "enabled": { "type": "boolean" },
+        "accountId": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "lastRunAt": { "type": "string", "format": "date-time" },
+        "nextRunAt": { "type": "string" },
+        "lastRunStatus": { "type": "string", "maxLength": 32 }
+      },
+      "required": ["id", "userId", "name", "templateText", "enabled"]
+    },
+    "AdvertPitch": {
+      "title": "AdvertPitch",
+      "description": "External client advert pitch submitted to a promoter's personal link",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "targetHostUid": { "type": "string", "maxLength": 128 },
+        "targetHostEmail": { "type": "string", "maxLength": 256 },
+        "title": { "type": "string", "maxLength": 256 },
+        "advertContent": { "type": "string", "maxLength": 10000 },
+        "linkUrl": { "type": "string", "maxLength": 2048 },
+        "mediaUrl": { "type": "string" },
+        "submitterName": { "type": "string", "maxLength": 128 },
+        "submitterContact": { "type": "string", "maxLength": 256 },
+        "category": { "type": "string", "maxLength": 64 },
+        "status": { "type": "string", "enum": ["pending_approval", "approved", "rejected"], "maxLength": 32 },
+        "submittedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "targetHostUid", "title", "advertContent", "status", "submittedAt"]
     }
   },
   "firestore": {
     "/users/{userId}": {
       "schema": "UserProfile",
       "description": "User profiles and promoter account state"
+    },
+    "/users/{userId}/campaigns/{campaignId}": {
+      "schema": "UserCampaign",
+      "description": "User specific broadcast campaigns persisted securely in Firebase"
     },
     "/admins/{adminId}": {
       "schema": "AdminRecord",
@@ -113,6 +171,18 @@
     "/adverts/{advertId}": {
       "schema": "AdvertCampaign",
       "description": "Public and business advert campaigns for automated distribution"
+    },
+    "/advert_pitches/{pitchId}": {
+      "schema": "AdvertPitch",
+      "description": "Client advert pitches submitted through personal promoter link for approval"
+    },
+    "/campaigns/{campaignId}": {
+      "schema": "UserCampaign",
+      "description": "Global campaigns registry for cloud dispatch and multi-account auto-poster"
+    },
+    "/config/{configId}": {
+      "schema": "PlatformFeatureConfig",
+      "description": "Global feature visibility toggles controlled by administrator"
     }
   }
 }

@@ -15,7 +15,9 @@ import {
   Sparkles,
   Globe2,
   LogIn,
-  Crown
+  Crown,
+  Sun,
+  Moon
 } from 'lucide-react';
 import { User } from 'firebase/auth';
 import { EngineStatusResponse } from '../types';
@@ -37,6 +39,8 @@ interface HeaderProps {
   onAddAccount?: (label: string) => Promise<void>;
   onDisconnectAccount?: (accountId: string) => void;
   onRemoveAccount?: (accountId: string) => void;
+  theme?: 'dark' | 'light';
+  onToggleTheme?: () => void;
 }
 
 const TAB_TITLES: Record<NavTabId, { title: string; subtitle: string; icon: any }> = {
@@ -50,6 +54,7 @@ const TAB_TITLES: Record<NavTabId, { title: string; subtitle: string; icon: any 
   visibility: { title: 'Story Viewer & Reacts', subtitle: 'Auto-view contact stories & send reactions', icon: Eye },
   logs: { title: 'Audit Logs & Telemetry', subtitle: 'Real-time WebSocket & event stream', icon: Terminal },
   deploy: { title: 'Render Deployment', subtitle: 'Deploy 24/7 cloud instance with free tier', icon: CloudUpload },
+  admin: { title: 'Admin Management Portal', subtitle: 'User management, lines, campaign oversight & platform toggles', icon: Crown },
 };
 
 export const Header: React.FC<HeaderProps> = ({ 
@@ -65,7 +70,9 @@ export const Header: React.FC<HeaderProps> = ({
   onSelectAccount,
   onAddAccount,
   onDisconnectAccount,
-  onRemoveAccount
+  onRemoveAccount,
+  theme = 'dark',
+  onToggleTheme
 }) => {
   const isConnected = statusData?.status === 'connected';
   const isConnecting = statusData?.status === 'connecting';
@@ -74,32 +81,32 @@ export const Header: React.FC<HeaderProps> = ({
   const isAdmin = isUserAdmin(currentUser);
 
   return (
-    <header className="border-b border-[#202c33] bg-[#111b21]/95 backdrop-blur-md sticky top-0 z-30 px-2.5 sm:px-6 py-2.5 sm:py-3 w-full max-w-full overflow-x-hidden">
-      <div className="flex items-center justify-between gap-2 sm:gap-4 max-w-7xl mx-auto w-full min-w-0">
+    <header className="border-b border-[#202c33] bg-[#111b21]/95 backdrop-blur-md sticky top-0 z-30 px-2 sm:px-6 py-2 sm:py-2.5 w-full max-w-full">
+      <div className="flex items-center justify-between gap-1.5 sm:gap-4 max-w-7xl mx-auto w-full min-w-0">
         
         {/* Left: Mobile-Enhanced Hamburger Button + Active Tab Info */}
         <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-1">
           <button
             onClick={onOpenSidebar}
-            className="flex items-center justify-center w-10 h-10 min-w-[40px] rounded-xl bg-[#0b141a] hover:bg-[#1f2c34] active:scale-95 text-slate-200 hover:text-white border border-[#202c33] transition-all cursor-pointer relative shadow-sm shrink-0"
+            className="flex items-center justify-center w-9 h-9 sm:w-10 sm:h-10 min-w-[36px] sm:min-w-[40px] rounded-xl bg-[#0b141a] hover:bg-[#1f2c34] active:scale-95 text-slate-200 hover:text-white border border-[#202c33] transition-all cursor-pointer relative shadow-sm shrink-0"
             aria-label="Open sidebar menu"
           >
             <Menu className="w-5 h-5 text-emerald-400" />
             {isConnected && (
-              <span className="absolute top-2 right-2 w-2 h-2 rounded-full bg-emerald-400 ring-2 ring-[#0b141a]" />
+              <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-emerald-400 ring-2 ring-[#0b141a]" />
             )}
           </button>
 
-          <div className="flex items-center gap-2 min-w-0 truncate">
+          <div className="flex items-center gap-2 min-w-0">
             <div className="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/20 items-center justify-center text-emerald-400 hidden xs:flex shrink-0">
               <CurrentIcon className="w-4 h-4" />
             </div>
-            <div className="min-w-0 truncate">
-              <h1 className="text-xs sm:text-sm md:text-base font-bold text-white tracking-tight leading-tight flex items-center gap-1.5 truncate">
+            <div className="min-w-0">
+              <h1 className="text-xs sm:text-sm md:text-base font-bold text-white tracking-tight leading-tight flex items-center gap-1.5 min-w-0">
                 <span className="truncate">{currentTab.title}</span>
                 {isAdmin && (
-                  <span className="text-[9px] px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 font-bold uppercase shrink-0 hidden sm:inline-flex items-center gap-1">
-                    <Crown className="w-2.5 h-2.5" /> Admin
+                  <span className="text-[9px] px-1.5 py-0.5 rounded-md bg-amber-500/20 text-amber-300 border border-amber-500/30 font-bold uppercase shrink-0 hidden sm:inline-flex items-center gap-1">
+                    <Crown className="w-2.5 h-2.5 text-amber-400" /> Admin
                   </span>
                 )}
               </h1>
@@ -110,12 +117,12 @@ export const Header: React.FC<HeaderProps> = ({
           </div>
         </div>
 
-        {/* Right: Actions, Account Switcher, Auth & Refresh */}
-        <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
+        {/* Right: Actions, Account Switcher, Auth & Refresh (Zero-Overlap Responsive Cluster) */}
+        <div className="flex items-center gap-1 sm:gap-2 shrink-0">
           
           {/* Multi-Account Switcher (Header Pill) */}
           {statusData?.accounts && statusData.accounts.length > 0 && onSelectAccount && onAddAccount && (
-            <div className="shrink-0 max-w-[140px] sm:max-w-none">
+            <div className="shrink-0">
               <AccountSwitcher
                 accounts={statusData.accounts}
                 activeAccountId={statusData.activeAccountId || statusData.accounts[0]?.id || 'primary'}
@@ -137,15 +144,15 @@ export const Header: React.FC<HeaderProps> = ({
               <span className="hidden sm:inline">Sign In</span>
             </button>
           ) : (
-            <div className="flex items-center gap-1.5 px-2 py-1 sm:px-2.5 sm:py-1 rounded-xl bg-[#0b141a] border border-[#202c33] shrink-0">
+            <div className="flex items-center gap-1.5 px-1.5 sm:px-2.5 py-1 rounded-xl bg-[#0b141a] border border-[#202c33] shrink-0" title={currentUser.email || ''}>
               {currentUser.photoURL ? (
                 <img src={currentUser.photoURL} alt="Avatar" className="w-5 h-5 rounded-full border border-emerald-500/30 shrink-0" />
               ) : (
                 <div className="w-5 h-5 rounded-full bg-emerald-600 text-white text-[9px] font-bold flex items-center justify-center shrink-0">
-                  {currentUser.email?.[0].toUpperCase()}
+                  {currentUser.email?.[0]?.toUpperCase() || 'U'}
                 </div>
               )}
-              <span className="text-xs text-white font-medium hidden lg:inline truncate max-w-[90px]">
+              <span className="text-xs text-white font-medium hidden md:inline truncate max-w-[80px]">
                 {currentUser.displayName || currentUser.email?.split('@')[0]}
               </span>
             </div>
@@ -191,6 +198,21 @@ export const Header: React.FC<HeaderProps> = ({
                 </div>
               )}
             </div>
+          )}
+
+          {/* Theme Toggle Button (Light / Dark Mode) */}
+          {onToggleTheme && (
+            <button
+              onClick={onToggleTheme}
+              className="w-8 h-8 sm:w-9 sm:h-9 flex items-center justify-center rounded-xl bg-[#0b141a] hover:bg-[#1f2c34] active:scale-95 text-slate-300 hover:text-amber-400 border border-[#202c33] transition-colors cursor-pointer shrink-0"
+              title={theme === 'dark' ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
+            >
+              {theme === 'dark' ? (
+                <Sun className="w-4 h-4 text-amber-400" />
+              ) : (
+                <Moon className="w-4 h-4 text-slate-700" />
+              )}
+            </button>
           )}
 
           {/* Quick Refresh Status Button */}

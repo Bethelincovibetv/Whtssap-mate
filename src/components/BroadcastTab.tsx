@@ -103,17 +103,52 @@ export const BroadcastTab: React.FC<BroadcastTabProps> = ({ statusData, onRefres
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const [history, setHistory] = useState<BroadcastHistoryItem[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
+  
+  // 24-Hour Auto-Recurring Status Reposting State
+  const [autoRepost24h, setAutoRepost24h] = useState<boolean>(false);
+  const [repeatIntervalHours, setRepeatIntervalHours] = useState<number>(24);
+  const [scheduledStatusJobs, setScheduledStatusJobs] = useState<any[]>([]);
+  const [loadingJobs, setLoadingJobs] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const isConnected = statusData?.status === 'connected';
   const accounts = statusData?.accounts || [];
   const connectedAccounts = accounts.filter(a => a.status === 'connected');
 
-  // Load tags, contacts summary, and broadcast history
+  // Load tags, contacts summary, broadcast history, and scheduled status jobs
   useEffect(() => {
     fetchTagsAndContacts();
     fetchHistory();
+    fetchScheduledStatusJobs();
   }, []);
+
+  const fetchScheduledStatusJobs = async () => {
+    setLoadingJobs(true);
+    try {
+      const res = await fetch('/api/status/scheduled');
+      const data = await res.json();
+      if (data.jobs) setScheduledStatusJobs(data.jobs);
+    } catch (e) {
+      console.warn('Error fetching scheduled status jobs:', e);
+    } finally {
+      setLoadingJobs(false);
+    }
+  };
+
+  const handleToggleStatusJob = async (jobId: string) => {
+    try {
+      const res = await fetch(`/api/status/scheduled/${jobId}/toggle`, { method: 'POST' });
+      if (res.ok) fetchScheduledStatusJobs();
+    } catch (e) {}
+  };
+
+  const handleDeleteStatusJob = async (jobId: string) => {
+    if (!confirm('Stop and remove this 24-hour auto-recurring status job?')) return;
+    try {
+      const res = await fetch(`/api/status/scheduled/${jobId}`, { method: 'DELETE' });
+      if (res.ok) fetchScheduledStatusJobs();
+    } catch (e) {}
+  };
 
   const fetchTagsAndContacts = async () => {
     try {
@@ -215,7 +250,9 @@ export const BroadcastTab: React.FC<BroadcastTabProps> = ({ statusData, onRefres
         font: fontStyle,
         broadcastToAllAccounts: selectedAccountId === 'all',
         accountId: selectedAccountId !== 'all' ? selectedAccountId : undefined,
-        targetTags: targetAudience === 'tag' && selectedTag !== 'all' ? [selectedTag] : undefined
+        targetTags: targetAudience === 'tag' && selectedTag !== 'all' ? [selectedTag] : undefined,
+        autoRepost24h: autoRepost24h,
+        repeatIntervalHours: autoRepost24h ? repeatIntervalHours : 24
       };
 
       if (mediaType === 'image') {
@@ -234,11 +271,14 @@ export const BroadcastTab: React.FC<BroadcastTabProps> = ({ statusData, onRefres
       if (res.ok && data.success) {
         setFeedback({
           type: 'success',
-          message: data.message || '✓ Successfully broadcasted to your WhatsApp Status!'
+          message: autoRepost24h 
+            ? `✓ Published & 24h Auto-Reposting Scheduled! (Story will automatically re-post every ${repeatIntervalHours}h across all weeks).`
+            : (data.message || '✓ Successfully broadcasted to your WhatsApp Status!')
         });
         setStatusText('');
         handleClearMedia();
         fetchHistory();
+        fetchScheduledStatusJobs();
         onRefresh();
       } else {
         setFeedback({
@@ -653,6 +693,86 @@ export const BroadcastTab: React.FC<BroadcastTabProps> = ({ statusData, onRefres
               </div>
             </div>
 
+            {/* 24-Hour Auto-Recurring WhatsApp Status Schedule (Keeps story active all weeks) */}
+            <div className="p-4 rounded-2xl bg-gradient-to-br from-emerald-950/40 via-[#0b141a] to-[#111b21] border border-emerald-500/30 space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center">
+                    <Clock className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h4 className="text-xs font-bold text-white flex items-center gap-2">
+                      <span>24-Hour Auto-Recurring Status</span>
+                      <span className="px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                        24/7 ALL WEEKS
+                      </span>
+                    </h4>
+                    <p className="text-[11px] text-slate-400">
+                      When this story expires after 24h, automatically re-post it again across all weeks.
+                    </p>
+                  </div>
+                </div>
+
+                {/* Toggle Switch */}
+                <button
+                  type="button"
+                  onClick={() => setAutoRepost24h(!autoRepost24h)}
+                  className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                    autoRepost24h ? 'bg-emerald-500' : 'bg-slate-700'
+                  }`}
+                >
+                  <span
+                    className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                      autoRepost24h ? 'translate-x-5' : 'translate-x-0'
+                    }`}
+                  />
+                </button>
+              </div>
+
+              {autoRepost24h && (
+                <div className="pt-3 border-t border-emerald-500/20 grid grid-cols-1 sm:grid-cols-3 gap-2 animate-in fade-in duration-150">
+                  <button
+                    type="button"
+                    onClick={() => setRepeatIntervalHours(24)}
+                    className={`p-2.5 rounded-xl text-left border text-xs transition-all cursor-pointer ${
+                      repeatIntervalHours === 24
+                        ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300 font-bold'
+                        : 'bg-[#111b21] border-[#202c33] text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    <p className="font-semibold">Every 24 Hours</p>
+                    <p className="text-[10px] text-slate-400 mt-0.5">Exact story expiry</p>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setRepeatIntervalHours(12)}
+                    className={`p-2.5 rounded-xl text-left border text-xs transition-all cursor-pointer ${
+                      repeatIntervalHours === 12
+                        ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300 font-bold'
+                        : 'bg-[#111b21] border-[#202c33] text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    <p className="font-semibold">Every 12 Hours</p>
+                    <p className="text-[10px] text-slate-400 mt-0.5">High top-of-feed</p>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setRepeatIntervalHours(6)}
+                    className={`p-2.5 rounded-xl text-left border text-xs transition-all cursor-pointer ${
+                      repeatIntervalHours === 6
+                        ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300 font-bold'
+                        : 'bg-[#111b21] border-[#202c33] text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    <p className="font-semibold">Every 6 Hours</p>
+                    <p className="text-[10px] text-slate-400 mt-0.5">Max status reach</p>
+                  </button>
+                </div>
+              )}
+            </div>
+
             {/* Feedback Alert */}
             {feedback && (
               <div
@@ -685,12 +805,82 @@ export const BroadcastTab: React.FC<BroadcastTabProps> = ({ statusData, onRefres
               ) : (
                 <>
                   <Send className="w-4 h-4" />
-                  <span>Broadcast Story to WhatsApp Now</span>
+                  <span>
+                    {autoRepost24h ? `Publish & Auto-Repost Every ${repeatIntervalHours}h` : 'Broadcast Story to WhatsApp Now'}
+                  </span>
                 </>
               )}
             </button>
 
           </form>
+
+          {/* Active 24-Hour Recurring Status Jobs Manager */}
+          {scheduledStatusJobs.length > 0 && (
+            <div className="mt-8 pt-6 border-t border-[#202c33] space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
+                  <h3 className="text-sm font-bold text-white">Active 24/7 Auto-Reposting Statuses ({scheduledStatusJobs.length})</h3>
+                </div>
+                <button
+                  onClick={fetchScheduledStatusJobs}
+                  className="text-xs text-emerald-400 hover:text-emerald-300 flex items-center gap-1 cursor-pointer"
+                >
+                  <RefreshCw className="w-3 h-3" />
+                  <span>Refresh</span>
+                </button>
+              </div>
+
+              <div className="space-y-2">
+                {scheduledStatusJobs.map((job) => (
+                  <div
+                    key={job.id}
+                    className="p-3.5 rounded-2xl bg-[#0b141a] border border-[#202c33] flex items-center justify-between gap-3 flex-wrap"
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className={`w-9 h-9 rounded-xl flex items-center justify-center text-white shrink-0 shadow-md ${
+                        job.enabled ? 'bg-gradient-to-br from-emerald-600 to-teal-500' : 'bg-slate-700 text-slate-400'
+                      }`}>
+                        <Clock className="w-4 h-4" />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-xs font-bold text-white truncate max-w-xs sm:max-w-sm">
+                          "{job.text ? job.text.slice(0, 40) + '...' : 'Media Status Story'}"
+                        </p>
+                        <p className="text-[11px] text-slate-400 flex items-center gap-2 mt-0.5">
+                          <span>Repeats every {job.repeatIntervalHours}h</span>
+                          <span>•</span>
+                          <span>Posted {job.runCount || 0} times</span>
+                          <span>•</span>
+                          <span className="text-emerald-400">Next run: {job.nextRunAt ? new Date(job.nextRunAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Ready'}</span>
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        onClick={() => handleToggleStatusJob(job.id)}
+                        className={`px-2.5 py-1 rounded-lg text-xs font-semibold border cursor-pointer ${
+                          job.enabled
+                            ? 'bg-amber-500/10 border-amber-500/30 text-amber-300 hover:bg-amber-500/20'
+                            : 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/20'
+                        }`}
+                      >
+                        {job.enabled ? 'Pause' : 'Resume'}
+                      </button>
+                      <button
+                        onClick={() => handleDeleteStatusJob(job.id)}
+                        className="p-1.5 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-400 hover:bg-rose-500/20 cursor-pointer"
+                        title="Delete recurring status job"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
         </div>
 

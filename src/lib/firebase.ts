@@ -5,6 +5,9 @@ import {
   signInWithPopup, 
   signOut, 
   onAuthStateChanged,
+  createUserWithEmailAndPassword,
+  signInWithEmailAndPassword,
+  updateProfile,
   User 
 } from 'firebase/auth';
 import { 
@@ -127,48 +130,85 @@ export function isUserAdmin(user: User | null): boolean {
   return ADMIN_EMAILS.some(adminEmail => adminEmail.toLowerCase() === user.email?.toLowerCase());
 }
 
+export const ALLOWED_APP_DOMAIN = 'whatsapp-growth-engine.ai.studio';
+
+// Helper to save user profile to Firestore
+async function syncUserProfileToFirestore(user: User, customDisplayName?: string) {
+  const userRef = doc(db, 'users', user.uid);
+  const isAdmin = isUserAdmin(user);
+  
+  const userProfileData = sanitizeFirestoreData({
+    uid: user.uid,
+    email: user.email || '',
+    displayName: customDisplayName || user.displayName || user.email?.split('@')[0] || 'Promoter',
+    photoURL: user.photoURL || '',
+    role: isAdmin ? 'admin' : 'promoter',
+    isAdmin: isAdmin,
+    totalEarned: 0,
+    totalAdsPublished: 0,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  });
+
+  try {
+    await setDoc(userRef, userProfileData, { merge: true });
+  } catch (fsErr) {
+    console.warn('Firestore profile sync note:', fsErr);
+  }
+
+  if (isAdmin) {
+    try {
+      await setDoc(doc(db, 'admins', user.uid), sanitizeFirestoreData({
+        email: user.email,
+        role: 'super_admin',
+        grantedAt: new Date().toISOString()
+      }), { merge: true });
+    } catch (e) {
+      console.warn('Admin record sync note:', e);
+    }
+  }
+
+  // Also sync to server-side backend persistence
+  fetch('/api/user/sync', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(userProfileData)
+  }).catch(() => {});
+
+  return userProfileData;
+}
+
+// Register with Email & Password
+export async function registerWithEmailPassword(email: string, pass: string, displayName?: string) {
+  const cleanEmail = email.trim().toLowerCase();
+  const res = await createUserWithEmailAndPassword(auth, cleanEmail, pass);
+  const user = res.user;
+
+  if (displayName && displayName.trim()) {
+    try {
+      await updateProfile(user, { displayName: displayName.trim() });
+    } catch (e) {}
+  }
+
+  await syncUserProfileToFirestore(user, displayName);
+  return user;
+}
+
+// Sign in with Email & Password
+export async function loginWithEmailPassword(email: string, pass: string) {
+  const cleanEmail = email.trim().toLowerCase();
+  const res = await signInWithEmailAndPassword(auth, cleanEmail, pass);
+  const user = res.user;
+  await syncUserProfileToFirestore(user);
+  return user;
+}
+
 // Sign In with Google popup
 export async function loginWithGoogle() {
   try {
     const result = await signInWithPopup(auth, googleProvider);
     const user = result.user;
-    
-    // Sync User Profile in Firestore
-    const userRef = doc(db, 'users', user.uid);
-    const isAdmin = isUserAdmin(user);
-    
-    const userProfileData = sanitizeFirestoreData({
-      uid: user.uid,
-      email: user.email || '',
-      displayName: user.displayName || user.email?.split('@')[0] || 'Promoter',
-      photoURL: user.photoURL || '',
-      role: isAdmin ? 'admin' : 'promoter',
-      isAdmin: isAdmin,
-      totalEarned: 0,
-      totalAdsPublished: 0,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
-    });
-
-    try {
-      await setDoc(userRef, userProfileData, { merge: true });
-    } catch (fsErr) {
-      handleFirestoreError(fsErr, OperationType.WRITE, 'users');
-    }
-
-    // Ensure Admin Record exists if this is the target admin email
-    if (isAdmin) {
-      try {
-        await setDoc(doc(db, 'admins', user.uid), sanitizeFirestoreData({
-          email: user.email,
-          role: 'super_admin',
-          grantedAt: new Date().toISOString()
-        }), { merge: true });
-      } catch (e) {
-        console.warn('Admin record sync note:', e);
-      }
-    }
-
+    await syncUserProfileToFirestore(user);
     return user;
   } catch (error: any) {
     if (error?.code === 'auth/unauthorized-domain') {

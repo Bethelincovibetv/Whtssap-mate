@@ -19,14 +19,17 @@ import {
   ShieldCheck,
   Globe2,
   Crown,
-  LogIn
+  LogIn,
+  Lock,
+  Sun,
+  Moon
 } from 'lucide-react';
 import { User } from 'firebase/auth';
 import { EngineStatusResponse } from '../types';
 import { isUserAdmin, ADMIN_EMAIL } from '../lib/firebase';
 import { AccountSwitcher } from './AccountSwitcher';
 
-export type NavTabId = 'landing' | 'ad-network' | 'connect' | 'api-keys' | 'groups' | 'campaign' | 'broadcast' | 'visibility' | 'logs' | 'deploy';
+export type NavTabId = 'landing' | 'ad-network' | 'connect' | 'api-keys' | 'groups' | 'campaign' | 'broadcast' | 'visibility' | 'logs' | 'deploy' | 'admin';
 
 interface SidebarProps {
   activeTab: NavTabId;
@@ -47,6 +50,8 @@ interface SidebarProps {
   onAddAccount?: (label: string) => Promise<void>;
   onDisconnectAccount?: (accountId: string) => void;
   onRemoveAccount?: (accountId: string) => void;
+  theme?: 'dark' | 'light';
+  onToggleTheme?: () => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -67,7 +72,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onSelectAccount,
   onAddAccount,
   onDisconnectAccount,
-  onRemoveAccount
+  onRemoveAccount,
+  theme = 'dark',
+  onToggleTheme
 }) => {
   const isConnected = statusData?.status === 'connected';
   const isConnecting = statusData?.status === 'connecting';
@@ -82,9 +89,20 @@ export const Sidebar: React.FC<SidebarProps> = ({
     startedAt: new Date().toISOString()
   };
 
-  const navItems = [
+  // Base friendly items for all users
+  interface NavItemDef {
+    id: NavTabId;
+    label: string;
+    icon: any;
+    desc: string;
+    badge?: string;
+    badgeColor?: string;
+    count?: number;
+  }
+
+  const userNavItems: NavItemDef[] = [
     { 
-      id: 'landing' as NavTabId, 
+      id: 'landing', 
       label: 'Home & Ad Network', 
       icon: Sparkles, 
       desc: 'Public landing & viral promos',
@@ -92,38 +110,83 @@ export const Sidebar: React.FC<SidebarProps> = ({
       badgeColor: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
     },
     { 
-      id: 'ad-network' as NavTabId, 
+      id: 'ad-network', 
       label: 'Community Ad Pool', 
       icon: Globe2, 
       desc: 'Automated group ads & pool',
       badge: 'FIREBASE',
       badgeColor: 'bg-amber-500/20 text-amber-400 border-amber-500/30'
     },
-    { id: 'connect' as NavTabId, label: 'Connect Account', icon: Link2, desc: 'Pair via QR or 8-digit code' },
+    { id: 'connect', label: 'Connect Line', icon: Link2, desc: 'Pair via QR or 8-digit code' },
+    { id: 'groups', label: 'Group Manager', icon: Users, desc: 'Search, tag & export contacts' },
     { 
-      id: 'api-keys' as NavTabId, 
-      label: 'Developer API & Keys', 
-      icon: KeyRound, 
-      desc: 'Integrate external apps & sites',
-      badge: 'REST API',
-      badgeColor: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
-    },
-    { id: 'groups' as NavTabId, label: 'Group Manager', icon: Users, desc: 'Search, tag & export VCF' },
-    { 
-      id: 'campaign' as NavTabId, 
+      id: 'campaign', 
       label: 'Campaign Engine', 
       icon: Rocket, 
-      desc: 'Multi-group & tag broadcast',
+      desc: '24/7 recurring auto-poster',
       badge: statusData?.campaign?.status === 'running' ? 'Active' : undefined,
       badgeColor: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30 animate-pulse'
     },
-    { id: 'broadcast' as NavTabId, label: 'Story Broadcast', icon: Send, desc: 'Post stories to all contacts' },
-    { id: 'visibility' as NavTabId, label: 'Story Viewer & Reacts', icon: Eye, desc: 'Auto-view & instant emoji reacts' },
-    { id: 'logs' as NavTabId, label: 'Audit Logs', icon: Terminal, desc: 'Real-time telemetry & events', count: logsCount },
-    { id: 'deploy' as NavTabId, label: 'Render Deploy', icon: CloudUpload, desc: '24/7 cloud hosting guide' },
+    { id: 'broadcast', label: 'Story Broadcast', icon: Send, desc: 'Post stories to all contacts' },
+    { id: 'visibility', label: 'Story Viewer & Reacts', icon: Eye, desc: 'Auto-view & instant emoji reacts' },
   ];
 
+  // Optional technical items (Controlled by Admin Platform Settings)
+  const showRenderDeploy = isAdmin || !!statusData?.settings?.showRenderDeployToUsers;
+  const showAuditLogs = isAdmin || !!statusData?.settings?.showAuditLogsToUsers;
+  const showApiKeys = isAdmin || !!statusData?.settings?.showApiKeysToUsers;
+
+  const optionalItems: NavItemDef[] = [];
+
+  if (showApiKeys) {
+    optionalItems.push({ 
+      id: 'api-keys', 
+      label: 'Developer API & Keys', 
+      icon: KeyRound, 
+      desc: 'Integrate external apps & webhooks',
+      badge: 'REST API',
+      badgeColor: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
+    });
+  }
+
+  if (showAuditLogs) {
+    optionalItems.push({ 
+      id: 'logs', 
+      label: 'Audit Logs', 
+      icon: Terminal, 
+      desc: 'Real-time telemetry & events', 
+      count: logsCount 
+    });
+  }
+
+  if (showRenderDeploy) {
+    optionalItems.push({ 
+      id: 'deploy', 
+      label: 'Render Deploy', 
+      icon: CloudUpload, 
+      desc: '24/7 cloud hosting guide' 
+    });
+  }
+
+  // Admin Management Portal item (Visible strictly to authenticated Super Admin)
+  const adminItems: NavItemDef[] = isAdmin ? [
+    {
+      id: 'admin',
+      label: 'Admin Portal',
+      icon: Crown,
+      desc: 'User management & platform governance',
+      badge: 'SUPER ADMIN',
+      badgeColor: 'bg-amber-500/20 text-amber-300 border-amber-500/40 shadow-sm'
+    }
+  ] : [];
+
+  const navItems: NavItemDef[] = [...adminItems, ...userNavItems, ...optionalItems];
+
   const handleSelectTab = (tab: NavTabId) => {
+    if (!currentUser && tab !== 'landing' && tab !== 'deploy') {
+      onGoogleLogin();
+      return;
+    }
     setActiveTab(tab);
     onClose();
   };
@@ -245,7 +308,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   : 'bg-rose-500'
               }`} />
               <span className="text-xs font-semibold text-slate-200">
-                {isConnected ? 'Socket Connected' : isConnecting ? 'Awaiting Scan' : 'Engine Idle'}
+                {isConnected ? 'WhatsApp Line Active' : isConnecting ? 'Connecting Line...' : 'Ready to Pair'}
               </span>
             </div>
 
@@ -324,6 +387,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 </div>
 
                 <div className="flex items-center gap-1.5 shrink-0 ml-2">
+                  {!currentUser && item.id !== 'landing' && item.id !== 'deploy' && (
+                    <span className="p-1 rounded bg-[#0b141a] text-slate-500 border border-[#202c33]" title="Sign in required">
+                      <Lock className="w-2.5 h-2.5 text-amber-400/80" />
+                    </span>
+                  )}
                   {item.badge && (
                     <span className={`text-[9px] px-1.5 py-0.5 rounded-md font-bold uppercase border ${item.badgeColor || 'bg-slate-800 text-slate-300'}`}>
                       {item.badge}
@@ -356,6 +424,24 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 <span>Install Mobile App</span>
               </div>
               <Download className="w-3.5 h-3.5" />
+            </button>
+          )}
+
+          {/* Theme Toggle Button (Light / Dark Mode) */}
+          {onToggleTheme && (
+            <button
+              onClick={onToggleTheme}
+              className="w-full flex items-center justify-between px-3 py-2 rounded-xl bg-[#111b21] hover:bg-[#1f2c34] active:scale-95 border border-[#202c33] text-slate-300 hover:text-white text-xs font-semibold transition-all cursor-pointer"
+            >
+              <div className="flex items-center gap-2">
+                {theme === 'dark' ? (
+                  <Sun className="w-4 h-4 text-amber-400" />
+                ) : (
+                  <Moon className="w-4 h-4 text-slate-600" />
+                )}
+                <span>{theme === 'dark' ? 'Switch to Light Mode' : 'Switch to Dark Mode'}</span>
+              </div>
+              <span className="text-[10px] text-slate-400 uppercase font-mono">{theme}</span>
             </button>
           )}
 

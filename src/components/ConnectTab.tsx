@@ -20,10 +20,15 @@ import {
   Plus,
   Trash2,
   LogOut,
-  X
+  X,
+  HelpCircle,
+  Eye,
+  ExternalLink
 } from 'lucide-react';
 import { EngineStatusResponse, ConnectedAccount } from '../types';
 import { COUNTRIES, DEFAULT_COUNTRY, Country } from '../data/countries';
+import pairingImg from '../assets/images/how_it_works_pairing_1790669396297.jpg';
+import { HowItWorksGuide } from './HowItWorksGuide';
 
 interface ConnectTabProps {
   statusData: EngineStatusResponse | null;
@@ -42,11 +47,29 @@ export const ConnectTab: React.FC<ConnectTabProps> = ({
   onDisconnectAccount,
   onRemoveAccount
 }) => {
-  const [selectedCountry, setSelectedCountry] = useState<Country>(DEFAULT_COUNTRY);
-  const [phoneNumber, setPhoneNumber] = useState('');
+  const [selectedCountry, setSelectedCountry] = useState<Country>(() => {
+    try {
+      const saved = localStorage.getItem('wm_pairing_country');
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return DEFAULT_COUNTRY;
+  });
+  const [phoneNumber, setPhoneNumber] = useState<string>(() => {
+    try {
+      return localStorage.getItem('wm_pairing_phone') || '';
+    } catch {
+      return '';
+    }
+  });
   const [countryDropdownOpen, setCountryDropdownOpen] = useState(false);
   const [countrySearch, setCountrySearch] = useState('');
-  const [pairingCode, setPairingCode] = useState<string | null>(null);
+  const [pairingCode, setPairingCode] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem('wm_pairing_code') || null;
+    } catch {
+      return null;
+    }
+  });
   const [loading, setLoading] = useState(false);
   const [resetting, setResetting] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -58,6 +81,7 @@ export const ConnectTab: React.FC<ConnectTabProps> = ({
   const [showAddModal, setShowAddModal] = useState(false);
   const [newAccountLabel, setNewAccountLabel] = useState('');
   const [isCreatingAccount, setIsCreatingAccount] = useState(false);
+  const [showGuide, setShowGuide] = useState(false);
 
   const dropdownRef = useRef<HTMLDivElement>(null);
 
@@ -68,6 +92,61 @@ export const ConnectTab: React.FC<ConnectTabProps> = ({
   const isConnected = activeAccount ? activeAccount.status === 'connected' : statusData?.status === 'connected';
   const isConnecting = activeAccount ? activeAccount.status === 'connecting' : statusData?.status === 'connecting';
   const connectedCount = accounts.filter(a => a.status === 'connected').length;
+
+  // Clear pairing code when successfully linked
+  useEffect(() => {
+    if (isConnected) {
+      setPairingCode(null);
+      try {
+        localStorage.removeItem('wm_pairing_code');
+      } catch {}
+    }
+  }, [isConnected]);
+
+  // Fast auto-detection poll while pairing code is on screen
+  useEffect(() => {
+    if (!isConnected && (pairingCode || activeAccount?.pairingCode)) {
+      const pollTimer = setInterval(() => {
+        onRefresh();
+      }, 2000);
+      return () => clearInterval(pollTimer);
+    }
+  }, [isConnected, pairingCode, activeAccount?.pairingCode, onRefresh]);
+
+  // Mobile App Lifecyle Listener: When user minimizes the app to copy/paste the pairing code into WhatsApp,
+  // returning to this tab triggers immediate refresh and verification!
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        onRefresh();
+      }
+    };
+    const handleFocus = () => {
+      onRefresh();
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('focus', handleFocus);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('focus', handleFocus);
+    };
+  }, [onRefresh]);
+
+  // Persist phone and country changes
+  const updatePhoneNumber = (val: string) => {
+    handlePhoneChange(val);
+    try {
+      localStorage.setItem('wm_pairing_phone', val);
+    } catch {}
+  };
+
+  const updateCountry = (country: Country) => {
+    setSelectedCountry(country);
+    try {
+      localStorage.setItem('wm_pairing_country', JSON.stringify(country));
+    } catch {}
+  };
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -143,6 +222,9 @@ export const ConnectTab: React.FC<ConnectTabProps> = ({
       const data = await res.json();
       if (res.ok && data.code) {
         setPairingCode(data.code);
+        try {
+          localStorage.setItem('wm_pairing_code', data.code);
+        } catch {}
         onRefresh();
       } else {
         setErrorMsg(data.error || 'Failed to generate pairing code. If session is stuck, click "Reset Session" below.');
@@ -159,6 +241,9 @@ export const ConnectTab: React.FC<ConnectTabProps> = ({
     setResetting(true);
     setErrorMsg(null);
     setPairingCode(null);
+    try {
+      localStorage.removeItem('wm_pairing_code');
+    } catch {}
     try {
       const res = await fetch('/api/reset-session', { 
         method: 'POST',
@@ -453,7 +538,7 @@ export const ConnectTab: React.FC<ConnectTabProps> = ({
                                 key={c.code}
                                 type="button"
                                 onClick={() => {
-                                  setSelectedCountry(c);
+                                  updateCountry(c);
                                   setCountryDropdownOpen(false);
                                   setCountrySearch('');
                                 }}
@@ -491,7 +576,7 @@ export const ConnectTab: React.FC<ConnectTabProps> = ({
                     <input
                       type="tel"
                       value={phoneNumber}
-                      onChange={(e) => handlePhoneChange(e.target.value)}
+                      onChange={(e) => updatePhoneNumber(e.target.value)}
                       placeholder={selectedCountry.code === 'NG' ? 'e.g. 704 353 7401 or 0803 123 4567' : 'e.g. 555 123 4567'}
                       disabled={isConnected || loading}
                       className="w-full bg-[#0b141a] border border-[#202c33] focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 rounded-xl px-4 py-3.5 text-white font-mono text-sm placeholder-slate-600 outline-none transition-all disabled:opacity-60"
@@ -551,13 +636,26 @@ export const ConnectTab: React.FC<ConnectTabProps> = ({
 
             {/* Live Pairing Code Output Display */}
             {(pairingCode || activeAccount?.pairingCode) && (
-              <div className="mt-6 p-5 rounded-2xl bg-gradient-to-br from-emerald-950/50 to-[#0b141a] border-2 border-emerald-500/60 shadow-2xl space-y-4">
+              <div className="mt-6 p-5 rounded-2xl bg-gradient-to-br from-emerald-950/50 to-[#0b141a] border-2 border-emerald-500/60 shadow-2xl space-y-4 animate-in fade-in">
+                {/* Active Reassurance Banner */}
+                <div className="p-3 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-xs flex items-center gap-2.5">
+                  <ShieldCheck className="w-5 h-5 text-emerald-400 shrink-0" />
+                  <div className="leading-tight">
+                    <p className="font-bold text-white">Session Protected & Persisted 24/7</p>
+                    <p className="text-[11px] text-emerald-300/90 mt-0.5">
+                      You can safely minimize this browser to copy/paste the code in WhatsApp. This page will remain active and auto-detect your link.
+                    </p>
+                  </div>
+                </div>
+
                 <div className="flex items-center justify-between">
                   <span className="text-xs uppercase font-bold tracking-wider text-emerald-400 flex items-center gap-1.5">
                     <Sparkles className="w-3.5 h-3.5" />
                     <span>Your WhatsApp Pairing Code</span>
                   </span>
-                  <span className="text-[10px] text-slate-400 font-mono">Expires in ~60s</span>
+                  <span className="text-[10px] text-emerald-400 font-mono bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/20">
+                    Live Active
+                  </span>
                 </div>
 
                 <div className="flex items-center justify-between gap-3 bg-[#0b141a] border border-emerald-500/40 p-4 rounded-xl">
@@ -565,25 +663,45 @@ export const ConnectTab: React.FC<ConnectTabProps> = ({
                     {pairingCode || activeAccount?.pairingCode}
                   </span>
                   <button
+                    type="button"
                     onClick={handleCopyCode}
-                    className="p-3 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 font-semibold text-xs transition-colors flex items-center gap-1.5 cursor-pointer"
+                    className="p-3 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 active:scale-95 text-emerald-300 font-semibold text-xs transition-colors flex items-center gap-1.5 cursor-pointer shrink-0"
                   >
                     {copied ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
                     <span>{copied ? 'Copied!' : 'Copy Code'}</span>
                   </button>
                 </div>
 
-                <div className="space-y-1.5 text-xs text-slate-300 bg-[#0b141a]/60 p-3 rounded-xl border border-[#202c33]">
-                  <p className="font-bold text-white flex items-center gap-1.5">
-                    <span>📱 How to enter code on WhatsApp:</span>
-                  </p>
-                  <ol className="list-decimal list-inside space-y-1 text-slate-300 text-[11px] leading-relaxed pl-1">
-                    <li>Open <strong>WhatsApp</strong> on your phone</li>
-                    <li>Tap <strong>Settings</strong> (iOS) or <strong>Three Dots</strong> (Android) &gt; <strong>Linked Devices</strong></li>
-                    <li>Tap <strong>Link a Device</strong></li>
-                    <li>Tap <strong>Link with phone number instead</strong> at the bottom</li>
-                    <li>Enter the 8-digit code shown above</li>
-                  </ol>
+                {/* Instant Check Connection Button */}
+                <button
+                  type="button"
+                  onClick={onRefresh}
+                  className="w-full py-3 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 active:scale-95 text-white font-bold text-xs shadow-lg shadow-emerald-950/50 flex items-center justify-center gap-2 cursor-pointer transition-all"
+                >
+                  <Zap className="w-4 h-4 text-yellow-300" />
+                  <span>I Entered Code in WhatsApp • Check Link Status Now</span>
+                </button>
+
+                <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 items-center bg-[#0b141a]/80 p-3 rounded-xl border border-[#202c33]">
+                  <div className="sm:col-span-8 space-y-1 text-xs text-slate-300">
+                    <p className="font-bold text-white flex items-center gap-1.5">
+                      <span>📱 How to enter code on WhatsApp:</span>
+                    </p>
+                    <ol className="list-decimal list-inside space-y-1 text-slate-300 text-[11px] leading-relaxed pl-1">
+                      <li>Open <strong>WhatsApp</strong> on your phone</li>
+                      <li>Tap <strong>Settings</strong> (iOS) or <strong>Three Dots</strong> (Android) &gt; <strong>Linked Devices</strong></li>
+                      <li>Tap <strong>Link a Device</strong></li>
+                      <li>Tap <strong>Link with phone number instead</strong> at the bottom</li>
+                      <li>Enter the 8-digit code shown above</li>
+                    </ol>
+                  </div>
+                  <div className="sm:col-span-4 rounded-lg overflow-hidden border border-emerald-500/30 shadow-md">
+                    <img 
+                      src={pairingImg} 
+                      alt="WhatsApp Pairing Guide" 
+                      className="w-full h-auto object-cover max-h-24 sm:max-h-28" 
+                    />
+                  </div>
                 </div>
               </div>
             )}
@@ -682,7 +800,35 @@ export const ConnectTab: React.FC<ConnectTabProps> = ({
 
       </div>
 
-      {/* Modal: Add New Account */}
+      {/* Interactive Guide Toggle & Section */}
+      <div className="pt-2">
+        <button
+          type="button"
+          onClick={() => setShowGuide(!showGuide)}
+          className="w-full p-4 rounded-2xl bg-[#111b21] hover:bg-[#1a2730] border border-[#202c33] flex items-center justify-between transition-all cursor-pointer group"
+        >
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 flex items-center justify-center group-hover:scale-105 transition-transform">
+              <Sparkles className="w-4 h-4" />
+            </div>
+            <div className="text-left">
+              <h3 className="text-sm font-bold text-white group-hover:text-emerald-300 transition-colors">
+                Need Help? View Step-by-Step Guide with Visual Diagrams
+              </h3>
+              <p className="text-xs text-slate-400">
+                Learn how 8-digit pairing, 24/7 cloud sync, and @everyone group tagging operate
+              </p>
+            </div>
+          </div>
+          <ChevronDown className={`w-5 h-5 text-slate-400 transition-transform ${showGuide ? 'rotate-180 text-emerald-400' : ''}`} />
+        </button>
+
+        {showGuide && (
+          <div className="mt-4 animate-in fade-in slide-in-from-top-3 duration-200">
+            <HowItWorksGuide />
+          </div>
+        )}
+      </div>
       {showAddModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in">
           <div 

@@ -79,6 +79,8 @@ export interface ContactItem {
   phone: string;
   name?: string;
   pushName?: string;
+  originalName?: string;
+  groupOriginName?: string;
   tags: string[];
   notes?: string;
   groupJids?: string[];
@@ -97,11 +99,14 @@ export interface VcfExportOptions {
   sendToGroup?: boolean;
   excludeBot?: boolean;
   includeAdminsOnly?: boolean;
+  includeOriginalName?: boolean;
 }
 
 export interface ScheduledCampaign {
   id: string;
   name: string;
+  userId?: string;
+  userEmail?: string;
   targetMode: 'groups' | 'tagged_contacts' | 'all_open_groups';
   targetGroupJids: string[];
   targetContactJids?: string[];
@@ -113,16 +118,64 @@ export interface ScheduledCampaign {
   batchSize: number;
   batchPauseMinutes: number;
   repeatEnabled: boolean;
-  repeatIntervalHours: number;
+  repeatIntervalMinutes?: number;
+  repeatIntervalHours?: number;
   maxIterations?: number;
   currentIteration: number;
   enabled: boolean;
+  tagAllMembers?: boolean;
   accountId?: string;
   createdAt: string;
   lastRunAt?: string | null;
   nextRunAt: string;
   lastRunStatus?: 'success' | 'failed' | 'running';
   lastRunStats?: { sent: number; failed: number };
+}
+
+export interface ScheduledStatusJob {
+  id: string;
+  userId?: string;
+  userEmail?: string;
+  accountId?: string;
+  accountLabel?: string;
+  text?: string;
+  imageUrl?: string;
+  videoUrl?: string;
+  mediaType: 'text' | 'image' | 'video';
+  backgroundColor: string;
+  font: number;
+  targetTags?: string[];
+  targetContactJids?: string[];
+  repeatIntervalHours: number;
+  enabled: boolean;
+  tagAllMembers?: boolean;
+  scheduleType: 'recurring_24h' | 'interval' | 'weekly';
+  createdAt: string;
+  lastRunAt?: string | null;
+  nextRunAt: string;
+  runCount: number;
+}
+
+export interface AccountJob {
+  id: string;
+  accountId: string;
+  accountLabel?: string;
+  userId?: string;
+  userEmail?: string;
+  type: 'campaign' | 'status_24h' | 'group_broadcast';
+  title: string;
+  description?: string;
+  status: 'active' | 'paused' | 'completed' | 'error';
+  scheduleType: 'recurring_24h' | 'interval' | 'weekly';
+  intervalMinutes?: number;
+  intervalHours?: number;
+  nextRunAt: string;
+  lastRunAt?: string | null;
+  runCount: number;
+  tagAllMembers?: boolean;
+  payload: any;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface CampaignProgress {
@@ -144,6 +197,7 @@ export interface CampaignProgress {
   batchPauseMinutes: number;
   templateText: string;
   imageUrl?: string;
+  tagAllMembers?: boolean;
   nextSendInSec: number;
   batchPauseRemainingSec: number;
   startedAt: string;
@@ -156,6 +210,8 @@ export interface ConnectedAccount {
   label: string;
   phone: string | null;
   name: string | null;
+  userId?: string | null;
+  userEmail?: string | null;
   status: 'disconnected' | 'connecting' | 'connected';
   phase?: string;
   hasQr: boolean;
@@ -165,6 +221,32 @@ export interface ConnectedAccount {
   createdAt: string;
   lastConnectedAt: string | null;
   stats?: EngineStats;
+}
+
+export interface PlatformSettings {
+  showRenderDeployToUsers: boolean;
+  showAuditLogsToUsers: boolean;
+  showApiKeysToUsers: boolean;
+  allowPublicRegistration: boolean;
+  maintenanceMode: boolean;
+  antiDisconnectKeepAlive: boolean;
+  supportContact: string;
+}
+
+export interface AdminUserItem {
+  uid: string;
+  email: string;
+  displayName: string;
+  photoURL?: string;
+  role: string;
+  isAdmin: boolean;
+  isBanned?: boolean;
+  bannedReason?: string;
+  bannedAt?: string;
+  connectedAccountsCount?: number;
+  campaignsCount?: number;
+  createdAt?: string;
+  lastActiveAt?: string;
 }
 
 export interface EngineStatusResponse {
@@ -182,6 +264,7 @@ export interface EngineStatusResponse {
   campaign?: CampaignProgress;
   activeAccountId?: string;
   accounts?: ConnectedAccount[];
+  settings?: PlatformSettings;
 }
 
 export interface ApiKeyItem {

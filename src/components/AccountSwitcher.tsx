@@ -70,48 +70,51 @@ export const AccountSwitcher: React.FC<AccountSwitcherProps> = ({
 
   return (
     <div className="relative" ref={dropdownRef}>
-      {/* Trigger Button */}
+      {/* Trigger Button: Dynamically responsive so it never crowds header */}
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-[#0b141a] hover:bg-[#1f2c34] border border-[#202c33] text-xs font-semibold text-slate-200 transition-all cursor-pointer shadow-sm group"
+        className="flex items-center gap-1.5 sm:gap-2 px-2 sm:px-3 py-1.5 rounded-xl bg-[#0b141a] hover:bg-[#1f2c34] active:scale-95 border border-[#202c33] text-xs font-semibold text-slate-200 transition-all cursor-pointer shadow-sm group select-none"
         title="Switch WhatsApp Account"
+        aria-label="Switch WhatsApp Account"
       >
-        <div className="relative">
+        <div className="relative shrink-0">
           <div className="w-5 h-5 rounded-lg bg-emerald-500/20 text-emerald-400 flex items-center justify-center font-bold text-[10px]">
             {activeAccount?.phone ? activeAccount.phone.slice(-2) : '1'}
           </div>
-          <span className={`absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full ${
+          <span className={`absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full ring-1 ring-[#0b141a] ${
             activeAccount?.status === 'connected'
-              ? 'bg-emerald-400 ring-1 ring-[#0b141a]'
+              ? 'bg-emerald-400 animate-pulse'
               : activeAccount?.status === 'connecting'
-              ? 'bg-amber-400 ring-1 ring-[#0b141a]'
-              : 'bg-rose-500 ring-1 ring-[#0b141a]'
+              ? 'bg-amber-400 animate-ping'
+              : 'bg-rose-500'
           }`} />
         </div>
 
-        <div className="flex flex-col text-left leading-tight">
-          <span className="truncate max-w-[100px] sm:max-w-[130px] font-medium text-white">
-            {activeAccount?.phone ? `+${activeAccount.phone}` : activeAccount?.label || 'Primary Account'}
+        {/* Account Details: Responsively truncated */}
+        <div className="hidden xs:flex flex-col text-left leading-tight min-w-0">
+          <span className="truncate max-w-[80px] sm:max-w-[110px] md:max-w-[130px] font-medium text-white text-[11px] sm:text-xs">
+            {activeAccount?.phone ? `+${activeAccount.phone}` : activeAccount?.label || 'Account'}
           </span>
-          <span className="text-[10px] text-slate-400 flex items-center gap-1">
-            <span>{connectedCount}/{accounts.length} online</span>
+          <span className="text-[9px] text-slate-400 hidden sm:flex items-center gap-1">
+            <span className="text-emerald-400 font-bold">{connectedCount}</span>
+            <span>of {accounts.length} active</span>
           </span>
         </div>
 
-        <ChevronDown className={`w-3.5 h-3.5 text-slate-400 group-hover:text-slate-200 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
+        <ChevronDown className={`w-3.5 h-3.5 text-slate-400 group-hover:text-slate-200 transition-transform shrink-0 ${isOpen ? 'rotate-180' : ''}`} />
       </button>
 
-      {/* Popover Dropdown */}
+      {/* Popover Dropdown: Anchored strictly right-0 to prevent covering navigation or overlapping */}
       {isOpen && (
-        <div className="absolute top-full mt-2 left-0 sm:right-0 sm:left-auto w-72 sm:w-80 bg-[#111b21] border border-[#202c33] rounded-2xl shadow-2xl z-50 overflow-hidden animate-fade-in p-3 space-y-2">
+        <div className="absolute top-full mt-2 right-0 w-72 sm:w-80 max-w-[calc(100vw-1.5rem)] bg-[#111b21] border border-[#202c33] rounded-2xl shadow-2xl shadow-black/80 z-50 overflow-hidden animate-in fade-in zoom-in-95 duration-150 p-3 space-y-2">
           
-          <div className="flex items-center justify-between px-2 py-1 text-xs">
+          <div className="flex items-center justify-between px-1 py-1 text-xs border-b border-[#202c33]/60 pb-2">
             <span className="font-bold text-white flex items-center gap-1.5">
               <Users className="w-3.5 h-3.5 text-emerald-400" />
-              <span>Connected Accounts</span>
+              <span>Multi-WhatsApp Accounts</span>
             </span>
             <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 font-mono font-bold">
-              {connectedCount} Active
+              {connectedCount}/{accounts.length} Online
             </span>
           </div>
 

@@ -972,12 +972,22 @@ export const GroupManagerTab: React.FC<GroupManagerTabProps> = ({
                       <tr key={c.jid} className="hover:bg-[#0b141a]/60 transition-colors">
                         <td className="p-3">
                           <div className="flex items-center gap-2.5">
-                            <div className="w-7 h-7 rounded-full bg-slate-800 text-slate-200 font-bold text-[10px] flex items-center justify-center">
+                            <div className="w-7 h-7 rounded-full bg-slate-800 text-slate-200 font-bold text-[10px] flex items-center justify-center shrink-0">
                               {c.phone.slice(-2)}
                             </div>
-                            <div>
-                              <p className="font-semibold text-white">{c.name || `+${c.phone}`}</p>
-                              <p className="text-[10px] text-slate-500 font-mono">+{c.phone}</p>
+                            <div className="truncate max-w-xs">
+                              <p className="font-semibold text-white truncate">
+                                {c.originalName || c.name || `+${c.phone}`}
+                              </p>
+                              <p className="text-[10px] text-slate-400 font-mono flex items-center gap-1.5 truncate">
+                                <span>+{c.phone}</span>
+                                {c.groupNames && c.groupNames.length > 0 && (
+                                  <>
+                                    <span>•</span>
+                                    <span className="text-emerald-400/80 truncate">from {c.groupNames[0]}</span>
+                                  </>
+                                )}
+                              </p>
                             </div>
                           </div>
                         </td>
