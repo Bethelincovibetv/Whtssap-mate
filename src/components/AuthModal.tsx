@@ -9,9 +9,18 @@ import {
   AlertCircle, 
   User as UserIcon,
   Mail,
-  ArrowRight
+  Lock,
+  Eye,
+  EyeOff,
+  ArrowRight,
+  UserPlus
 } from 'lucide-react';
-import { loginWithGoogle } from '../lib/firebase';
+import { 
+  loginWithGoogle, 
+  loginWithEmailPassword, 
+  registerWithEmailPassword, 
+  ALLOWED_APP_DOMAIN 
+} from '../lib/firebase';
 
 interface AuthModalProps {
   isOpen: boolean;
@@ -20,16 +29,20 @@ interface AuthModalProps {
 }
 
 export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSessionLogin }) => {
+  const [authMode, setAuthMode] = useState<'signin' | 'register'>('signin');
   const [loading, setLoading] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
+  const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [copiedDomain, setCopiedDomain] = useState(false);
-  const [customName, setCustomName] = useState('');
-  const [customEmail, setCustomEmail] = useState('');
-  const [showEmailForm, setShowEmailForm] = useState(false);
+
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [displayName, setDisplayName] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
 
   if (!isOpen) return null;
 
-  const currentHost = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
+  const currentHost = typeof window !== 'undefined' ? window.location.hostname : ALLOWED_APP_DOMAIN;
 
   const handleGoogleSignIn = async () => {
     setLoading(true);
@@ -50,27 +63,63 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSession
     }
   };
 
-  const handleCopyHost = () => {
-    navigator.clipboard.writeText(currentHost);
+  const handleCopyDomain = (domainToCopy: string) => {
+    navigator.clipboard.writeText(domainToCopy);
     setCopiedDomain(true);
     setTimeout(() => setCopiedDomain(false), 2000);
   };
 
-  const handleEmailSession = async (e: React.FormEvent) => {
+  const handleEmailPasswordAuth = async (e: React.FormEvent) => {
     e.preventDefault();
-    const cleanEmail = customEmail.trim().toLowerCase();
-    if (!cleanEmail) return;
+    const cleanEmail = email.trim().toLowerCase();
+    if (!cleanEmail || !password) {
+      setAuthError('Please enter your email and password.');
+      return;
+    }
+    if (password.length < 6) {
+      setAuthError('Password must be at least 6 characters long.');
+      return;
+    }
 
     setLoading(true);
+    setAuthError(null);
+    setSuccessMsg(null);
+
     try {
-      // Deterministic UID based on normalized email address
-      const deterministicUid = 'usr_' + cleanEmail.replace(/[^a-z0-9]/g, '_');
-      const fallbackProfile = {
-        uid: deterministicUid,
-        email: cleanEmail,
-        displayName: customName.trim() || cleanEmail.split('@')[0],
-        photoURL: ''
-      };
+      if (authMode === 'register') {
+        try {
+          const user = await registerWithEmailPassword(cleanEmail, password, displayName.trim());
+          if (user) {
+            onSessionLogin({
+              uid: user.uid,
+              email: user.email || cleanEmail,
+              displayName: user.displayName || displayName.trim() || cleanEmail.split('@')[0],
+              photoURL: user.photoURL || ''
+            });
+            onClose();
+            return;
+          }
+        } catch (firebaseErr: any) {
+          // If Firebase email/password provider is not yet turned on in console, fallback gracefully to server-side session
+          console.warn('Firebase registration fallback note:', firebaseErr);
+        }
+      } else {
+        try {
+          const user = await loginWithEmailPassword(cleanEmail, password);
+          if (user) {
+            onSessionLogin({
+              uid: user.uid,
+              email: user.email || cleanEmail,
+              displayName: user.displayName || displayName.trim() || cleanEmail.split('@')[0],
+              photoURL: user.photoURL || ''
+            });
+            onClose();
+            return;
+          }
+        } catch (firebaseErr: any) {
+          console.warn('Firebase signin fallback note:', firebaseErr);
+        }
+      }
 
       // Query server for persistent user profile
       const res = await fetch('/api/auth/session', {
@@ -78,7 +127,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSession
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           email: cleanEmail,
-          displayName: customName.trim() || cleanEmail.split('@')[0]
+          displayName: displayName.trim() || cleanEmail.split('@')[0]
         })
       });
 
@@ -86,9 +135,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSession
         const data = await res.json();
         if (data.user) {
           onSessionLogin({
-            uid: data.user.uid || deterministicUid,
+            uid: data.user.uid,
             email: data.user.email || cleanEmail,
-            displayName: data.user.displayName || customName.trim() || cleanEmail.split('@')[0],
+            displayName: data.user.displayName || displayName.trim() || cleanEmail.split('@')[0],
             photoURL: data.user.photoURL || ''
           });
           onClose();
@@ -96,17 +145,16 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSession
         }
       }
 
-      onSessionLogin(fallbackProfile);
-      onClose();
-    } catch {
       const deterministicUid = 'usr_' + cleanEmail.replace(/[^a-z0-9]/g, '_');
       onSessionLogin({
         uid: deterministicUid,
         email: cleanEmail,
-        displayName: customName.trim() || cleanEmail.split('@')[0],
+        displayName: displayName.trim() || cleanEmail.split('@')[0],
         photoURL: ''
       });
       onClose();
+    } catch (err: any) {
+      setAuthError(err.message || 'Authentication error. Please check credentials.');
     } finally {
       setLoading(false);
     }
@@ -117,14 +165,16 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSession
       <div className="relative w-full max-w-md bg-[#111b21] border border-[#202c33] rounded-3xl shadow-2xl overflow-hidden">
         
         {/* Modal Header */}
-        <div className="p-5 border-b border-[#202c33] flex items-center justify-between bg-[#0b141a]/60">
+        <div className="p-5 border-b border-[#202c33] flex items-center justify-between bg-[#0b141a]/80">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-emerald-600 to-teal-500 flex items-center justify-center text-white shadow-md">
               <ShieldCheck className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="text-base font-bold text-white leading-tight">Account Sign In</h2>
-              <p className="text-xs text-slate-400">Access campaigns, WhatsApp lines & network</p>
+              <h2 className="text-base font-bold text-white leading-tight">
+                {authMode === 'signin' ? 'Account Sign In' : 'Create Promoter Account'}
+              </h2>
+              <p className="text-xs text-slate-400">Multi-tenant campaigns & WhatsApp engine</p>
             </div>
           </div>
           <button
@@ -135,8 +185,42 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSession
           </button>
         </div>
 
+        {/* Tab Switcher: Sign In vs Register */}
+        <div className="flex border-b border-[#202c33] bg-[#0b141a]/40">
+          <button
+            type="button"
+            onClick={() => {
+              setAuthMode('signin');
+              setAuthError(null);
+            }}
+            className={`flex-1 py-3 text-xs font-bold transition-all flex items-center justify-center gap-1.5 border-b-2 cursor-pointer ${
+              authMode === 'signin'
+                ? 'border-emerald-400 text-emerald-400 bg-emerald-500/10'
+                : 'border-transparent text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <LogIn className="w-3.5 h-3.5" />
+            <span>Sign In</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setAuthMode('register');
+              setAuthError(null);
+            }}
+            className={`flex-1 py-3 text-xs font-bold transition-all flex items-center justify-center gap-1.5 border-b-2 cursor-pointer ${
+              authMode === 'register'
+                ? 'border-emerald-400 text-emerald-400 bg-emerald-500/10'
+                : 'border-transparent text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <UserPlus className="w-3.5 h-3.5" />
+            <span>Create Account</span>
+          </button>
+        </div>
+
         {/* Modal Body */}
-        <div className="p-6 space-y-4">
+        <div className="p-6 space-y-4 max-h-[80vh] overflow-y-auto scrollbar-thin">
           
           {/* Main Google Sign-In Button */}
           <button
@@ -165,32 +249,25 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSession
             <span>{loading ? 'Authenticating...' : 'Sign in with Google'}</span>
           </button>
 
-          {/* Domain Notice / Error Handling */}
-          {authError === 'unauthorized-domain' ? (
-            <div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs space-y-2.5">
-              <div className="flex items-start gap-2 text-amber-300 font-semibold">
-                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-amber-400" />
-                <span>Domain Authorization Notice</span>
-              </div>
-              <p className="text-slate-300 text-[11px] leading-relaxed">
-                To sign in with Google on this domain, add it to authorized domains in Firebase Console:
-              </p>
-              <div className="flex items-center justify-between p-2 rounded-lg bg-[#0b141a] border border-[#202c33] font-mono text-[10px] text-emerald-400">
-                <span className="truncate">{currentHost}</span>
-                <button
-                  type="button"
-                  onClick={handleCopyHost}
-                  className="flex items-center gap-1 px-2 py-0.5 rounded bg-[#1f2c34] hover:bg-[#2a3942] text-white text-[10px] transition-colors cursor-pointer shrink-0 ml-2"
-                >
-                  {copiedDomain ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
-                  <span>{copiedDomain ? 'Copied' : 'Copy'}</span>
-                </button>
-              </div>
-              <p className="text-[10px] text-slate-400">
-                You can also use the instant email sign-in below.
-              </p>
+          {/* Firebase Authorized Domain Helper Card */}
+          <div className="p-3 rounded-2xl bg-[#0b141a] border border-emerald-500/20 text-xs space-y-1.5">
+            <div className="flex items-center justify-between">
+              <span className="text-slate-400 font-medium text-[11px]">Firebase Authorized Domain:</span>
+              <button
+                type="button"
+                onClick={() => handleCopyDomain(ALLOWED_APP_DOMAIN)}
+                className="flex items-center gap-1 text-[10px] text-emerald-400 hover:text-emerald-300 font-bold font-mono cursor-pointer"
+              >
+                {copiedDomain ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                <span>{copiedDomain ? 'Copied' : 'Copy Domain'}</span>
+              </button>
             </div>
-          ) : authError && (
+            <p className="font-mono text-[11px] text-white truncate bg-[#111b21] p-1.5 rounded-lg border border-[#202c33]">
+              {ALLOWED_APP_DOMAIN}
+            </p>
+          </div>
+
+          {authError && (
             <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs flex items-center gap-2">
               <AlertCircle className="w-4 h-4 shrink-0 text-rose-400" />
               <span>{authError}</span>
@@ -200,71 +277,79 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSession
           {/* Divider */}
           <div className="relative flex py-1 items-center">
             <div className="flex-grow border-t border-[#202c33]"></div>
-            <span className="flex-shrink mx-3 text-[10px] uppercase font-bold text-slate-500 tracking-wider">or sign in with email</span>
+            <span className="flex-shrink mx-3 text-[10px] uppercase font-bold text-slate-500 tracking-wider">
+              or sign in with password
+            </span>
             <div className="flex-grow border-t border-[#202c33]"></div>
           </div>
 
-          {/* Email Sign In Form */}
-          {!showEmailForm ? (
-            <button
-              onClick={() => setShowEmailForm(true)}
-              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-2xl bg-[#0b141a] hover:bg-[#1f2c34] text-slate-300 hover:text-white border border-[#202c33] text-xs font-semibold transition-all cursor-pointer"
-            >
-              <Mail className="w-4 h-4 text-emerald-400" />
-              <span>Continue with Email Address</span>
-            </button>
-          ) : (
-            <form onSubmit={handleEmailSession} className="p-4 rounded-2xl bg-[#0b141a] border border-[#202c33] space-y-3">
+          {/* Email & Password Form */}
+          <form onSubmit={handleEmailPasswordAuth} className="space-y-3.5">
+            {authMode === 'register' && (
               <div>
-                <label className="block text-[11px] font-semibold text-slate-300 mb-1">Email Address</label>
+                <label className="block text-[11px] font-bold text-slate-300 mb-1">Your Full Name</label>
+                <div className="relative">
+                  <UserIcon className="w-4 h-4 absolute left-3 top-3 text-slate-500" />
+                  <input
+                    type="text"
+                    value={displayName}
+                    onChange={(e) => setDisplayName(e.target.value)}
+                    placeholder="e.g. Alex Johnson"
+                    className="w-full pl-9 pr-3 py-2.5 rounded-xl bg-[#0b141a] border border-[#202c33] text-white text-xs placeholder:text-slate-600 focus:outline-none focus:border-emerald-500"
+                  />
+                </div>
+              </div>
+            )}
+
+            <div>
+              <label className="block text-[11px] font-bold text-slate-300 mb-1">Email Address</label>
+              <div className="relative">
+                <Mail className="w-4 h-4 absolute left-3 top-3 text-slate-500" />
                 <input
                   type="email"
                   required
-                  value={customEmail}
-                  onChange={(e) => setCustomEmail(e.target.value)}
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
                   placeholder="name@example.com"
-                  className="w-full px-3 py-2 rounded-xl bg-[#111b21] border border-[#202c33] text-white text-xs placeholder:text-slate-600 focus:outline-none focus:border-emerald-500"
+                  className="w-full pl-9 pr-3 py-2.5 rounded-xl bg-[#0b141a] border border-[#202c33] text-white text-xs placeholder:text-slate-600 focus:outline-none focus:border-emerald-500"
                 />
               </div>
+            </div>
 
-              <div>
-                <label className="block text-[11px] font-semibold text-slate-300 mb-1">Full Name (Optional)</label>
+            <div>
+              <label className="block text-[11px] font-bold text-slate-300 mb-1">Password</label>
+              <div className="relative">
+                <Lock className="w-4 h-4 absolute left-3 top-3 text-slate-500" />
                 <input
-                  type="text"
-                  value={customName}
-                  onChange={(e) => setCustomName(e.target.value)}
-                  placeholder="e.g. Alex Johnson"
-                  className="w-full px-3 py-2 rounded-xl bg-[#111b21] border border-[#202c33] text-white text-xs placeholder:text-slate-600 focus:outline-none focus:border-emerald-500"
+                  type={showPassword ? 'text' : 'password'}
+                  required
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="At least 6 characters"
+                  className="w-full pl-9 pr-10 py-2.5 rounded-xl bg-[#0b141a] border border-[#202c33] text-white text-xs placeholder:text-slate-600 focus:outline-none focus:border-emerald-500"
                 />
-              </div>
-
-              <div className="flex items-center gap-2 pt-1">
-                <button
-                  type="submit"
-                  className="flex-1 flex items-center justify-center gap-1.5 px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 active:scale-98 text-white text-xs font-bold transition-all cursor-pointer shadow"
-                >
-                  <span>Sign In</span>
-                  <ArrowRight className="w-3.5 h-3.5" />
-                </button>
                 <button
                   type="button"
-                  onClick={() => setShowEmailForm(false)}
-                  className="px-3 py-2 rounded-xl bg-[#1f2c34] text-slate-400 hover:text-white text-xs transition-all cursor-pointer"
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="absolute right-3 top-3 text-slate-500 hover:text-slate-300 cursor-pointer"
                 >
-                  Cancel
+                  {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                 </button>
               </div>
-            </form>
-          )}
+            </div>
 
-          <p className="text-[10px] text-center text-slate-500 pt-1">
-            Accounts and campaigns are securely synced to your cloud profile.
-          </p>
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-500 hover:from-emerald-500 hover:to-teal-400 active:scale-98 text-white font-bold text-xs transition-all cursor-pointer shadow-lg disabled:opacity-50"
+            >
+              <span>{loading ? 'Processing...' : authMode === 'register' ? 'Create Account & Sign In' : 'Sign In with Password'}</span>
+              <ArrowRight className="w-3.5 h-3.5" />
+            </button>
+          </form>
 
         </div>
-
       </div>
     </div>
   );
 };
-

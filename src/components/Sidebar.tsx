@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { 
   Link2, 
   KeyRound, 
@@ -22,7 +22,11 @@ import {
   LogIn,
   Lock,
   Sun,
-  Moon
+  Moon,
+  ChevronDown,
+  ChevronUp,
+  Activity,
+  Layers
 } from 'lucide-react';
 import { User } from 'firebase/auth';
 import { EngineStatusResponse } from '../types';
@@ -76,6 +80,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   theme = 'dark',
   onToggleTheme
 }) => {
+  const [isAnalysisExpanded, setIsAnalysisExpanded] = useState<boolean>(false);
   const isConnected = statusData?.status === 'connected';
   const isConnecting = statusData?.status === 'connecting';
   const isAdmin = isUserAdmin(currentUser);
@@ -89,12 +94,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
     startedAt: new Date().toISOString()
   };
 
-  // Base friendly items for all users
+  const totalEventsCount = (stats.statusesViewed || 0) + (stats.reactionsSent || 0) + (stats.campaignMessagesSent || 0) + (stats.broadcastsSent || 0);
+
+  // Base friendly items for all users with colourful mobile app icon styles
   interface NavItemDef {
     id: NavTabId;
     label: string;
     icon: any;
     desc: string;
+    iconGradient: string;
     badge?: string;
     badgeColor?: string;
     count?: number;
@@ -105,30 +113,57 @@ export const Sidebar: React.FC<SidebarProps> = ({
       id: 'landing', 
       label: 'Home & Ad Network', 
       icon: Sparkles, 
-      desc: 'Public landing & viral promos',
-      badge: 'PROMO',
+      desc: 'Live dashboard & network stats',
+      iconGradient: 'from-emerald-500 to-teal-400 text-white shadow-emerald-500/20',
+      badge: 'LIVE',
       badgeColor: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
     },
     { 
       id: 'ad-network', 
       label: 'Community Ad Pool', 
       icon: Globe2, 
-      desc: 'Automated group ads & pool',
-      badge: 'FIREBASE',
+      desc: 'Pooled groups & sponsor pitches',
+      iconGradient: 'from-amber-500 to-orange-500 text-white shadow-amber-500/20',
+      badge: 'POOL',
       badgeColor: 'bg-amber-500/20 text-amber-400 border-amber-500/30'
     },
-    { id: 'connect', label: 'Connect Line', icon: Link2, desc: 'Pair via QR or 8-digit code' },
-    { id: 'groups', label: 'Group Manager', icon: Users, desc: 'Search, tag & export contacts' },
+    { 
+      id: 'connect', 
+      label: 'Connect WhatsApp Line', 
+      icon: Link2, 
+      desc: 'Pair via QR or 8-digit code',
+      iconGradient: 'from-cyan-500 to-blue-500 text-white shadow-cyan-500/20'
+    },
+    { 
+      id: 'groups', 
+      label: 'Group Manager & VCF', 
+      icon: Users, 
+      desc: 'Search, tag & export real contacts',
+      iconGradient: 'from-indigo-500 to-violet-600 text-white shadow-indigo-500/20'
+    },
     { 
       id: 'campaign', 
-      label: 'Campaign Engine', 
+      label: 'Campaign & Auto-Poster', 
       icon: Rocket, 
-      desc: '24/7 recurring auto-poster',
+      desc: '24/7 scheduled group broadcaster',
+      iconGradient: 'from-rose-500 to-pink-500 text-white shadow-rose-500/20',
       badge: statusData?.campaign?.status === 'running' ? 'Active' : undefined,
       badgeColor: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30 animate-pulse'
     },
-    { id: 'broadcast', label: 'Story Broadcast', icon: Send, desc: 'Post stories to all contacts' },
-    { id: 'visibility', label: 'Story Viewer & Reacts', icon: Eye, desc: 'Auto-view & instant emoji reacts' },
+    { 
+      id: 'broadcast', 
+      label: 'Story Broadcast Engine', 
+      icon: Send, 
+      desc: 'Auto-post stories across contacts',
+      iconGradient: 'from-purple-500 to-fuchsia-600 text-white shadow-purple-500/20'
+    },
+    { 
+      id: 'visibility', 
+      label: 'Story Viewer & Reacts', 
+      icon: Eye, 
+      desc: 'Auto-view & instant emoji reacts',
+      iconGradient: 'from-sky-400 to-blue-600 text-white shadow-blue-500/20'
+    },
   ];
 
   // Optional technical items (Controlled by Admin Platform Settings)
@@ -144,6 +179,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       label: 'Developer API & Keys', 
       icon: KeyRound, 
       desc: 'Integrate external apps & webhooks',
+      iconGradient: 'from-teal-500 to-emerald-700 text-white shadow-teal-500/20',
       badge: 'REST API',
       badgeColor: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
     });
@@ -152,9 +188,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
   if (showAuditLogs) {
     optionalItems.push({ 
       id: 'logs', 
-      label: 'Audit Logs', 
+      label: 'Audit Telemetry Logs', 
       icon: Terminal, 
-      desc: 'Real-time telemetry & events', 
+      desc: 'Real-time telemetry & events',
+      iconGradient: 'from-slate-600 to-zinc-800 text-white shadow-slate-500/20',
       count: logsCount 
     });
   }
@@ -162,9 +199,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
   if (showRenderDeploy) {
     optionalItems.push({ 
       id: 'deploy', 
-      label: 'Render Deploy', 
+      label: 'Render 24/7 Cloud Deploy', 
       icon: CloudUpload, 
-      desc: '24/7 cloud hosting guide' 
+      desc: 'Cloud hosting setup instructions',
+      iconGradient: 'from-blue-600 to-cyan-700 text-white shadow-blue-500/20'
     });
   }
 
@@ -172,10 +210,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const adminItems: NavItemDef[] = isAdmin ? [
     {
       id: 'admin',
-      label: 'Admin Portal',
+      label: 'Admin Control Portal',
       icon: Crown,
-      desc: 'User management & platform governance',
-      badge: 'SUPER ADMIN',
+      desc: 'Platform governance & users',
+      iconGradient: 'from-amber-400 via-amber-500 to-yellow-600 text-white shadow-amber-500/30',
+      badge: 'ADMIN',
       badgeColor: 'bg-amber-500/20 text-amber-300 border-amber-500/40 shadow-sm'
     }
   ] : [];
@@ -212,7 +251,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         <div className="p-4 sm:p-5 border-b border-[#202c33] flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="relative">
-              <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-[#128C7E] via-[#075E54] to-[#25D366] flex items-center justify-center shadow-lg shadow-emerald-950/60 ring-1 ring-emerald-500/30">
+              <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-[#128C7E] via-[#075E54] to-[#25D366] flex items-center justify-center shadow-lg shadow-emerald-950/60 ring-1 ring-emerald-500/30">
                 <svg className="w-5 h-5 text-white" fill="currentColor" viewBox="0 0 24 24">
                   <path d="M12.031 6.172c-3.181 0-5.767 2.586-5.768 5.766-.001 1.298.38 2.27 1.019 3.287l-.711 2.599 2.679-.702c.974.553 1.769.82 2.781.821 3.18 0 5.767-2.587 5.768-5.766.001-3.182-2.585-5.768-5.769-5.768zm3.364 8.163c-.144.405-.837.774-1.17.824-.312.045-.698.077-2.222-.556-1.95-.811-3.21-2.779-3.307-2.909-.096-.13-.787-1.047-.787-1.996 0-.949.498-1.416.675-1.611.178-.195.388-.244.518-.244.13 0 .26.001.373.006.12.006.28-.046.438.334.162.388.553 1.349.601 1.448.049.098.081.213.016.342-.065.13-.098.211-.195.324-.097.114-.205.254-.293.342-.098.098-.2.204-.086.399.114.195.506.835 1.086 1.352.748.666 1.378.873 1.573.971.195.097.308.081.422-.049.114-.13.487-.568.617-.763.13-.195.26-.162.438-.097.178.065 1.134.535 1.329.633.195.098.324.146.373.227.048.081.048.471-.096.876z"/>
                   <path fillRule="evenodd" clipRule="evenodd" d="M12 2C6.477 2 2 6.477 2 12c0 1.89.525 3.66 1.438 5.168L2 22l4.98-1.39A9.957 9.957 0 0012 22c5.523 0 10-4.477 10-10S17.523 2 12 2zm0 18.2a8.17 8.17 0 01-4.322-1.229l-.31-.184-2.96.825.834-2.887-.202-.323A8.17 8.17 0 1112 20.2z"/>
@@ -290,17 +329,22 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold transition-all cursor-pointer shadow"
               >
                 <LogIn className="w-3 h-3" />
-                <span>Google Sign In</span>
+                <span>Account Sign In</span>
               </button>
             </div>
           )}
         </div>
 
-        {/* Live Status Card */}
-        <div className="px-4 py-3 border-b border-[#202c33] bg-[#0b141a]/50">
-          <div className="flex items-center justify-between">
+        {/* Minimizable / Collapsible Analysis & Status Section */}
+        <div className="border-b border-[#202c33] bg-[#0b141a]/60 transition-all">
+          {/* Collapsible Header Toggle */}
+          <button
+            type="button"
+            onClick={() => setIsAnalysisExpanded(!isAnalysisExpanded)}
+            className="w-full px-4 py-2.5 flex items-center justify-between hover:bg-[#111b21] transition-colors cursor-pointer text-left"
+          >
             <div className="flex items-center gap-2">
-              <span className={`w-2.5 h-2.5 rounded-full ${
+              <span className={`w-2 h-2 rounded-full ${
                 isConnected 
                   ? 'bg-emerald-400 animate-pulse ring-2 ring-emerald-500/30' 
                   : isConnecting 
@@ -308,55 +352,68 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   : 'bg-rose-500'
               }`} />
               <span className="text-xs font-semibold text-slate-200">
-                {isConnected ? 'WhatsApp Line Active' : isConnecting ? 'Connecting Line...' : 'Ready to Pair'}
+                {isConnected ? 'Line Active' : isConnecting ? 'Connecting...' : 'Ready to Pair'}
+              </span>
+              <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-[#111b21] border border-[#202c33] text-slate-400 font-mono">
+                {totalEventsCount} events
               </span>
             </div>
 
-            <div className="flex items-center gap-1 text-[11px] text-slate-400 font-mono">
-              <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-              <span>Ad Net 24/7</span>
+            <div className="flex items-center gap-1 text-[11px] text-emerald-400 font-medium">
+              <span>{isAnalysisExpanded ? 'Collapse' : 'Expand'}</span>
+              {isAnalysisExpanded ? (
+                <ChevronUp className="w-3.5 h-3.5 text-slate-400" />
+              ) : (
+                <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
+              )}
             </div>
-          </div>
+          </button>
 
-          {/* Mini Stat Badges */}
-          <div className="grid grid-cols-4 gap-1.5 mt-2.5 pt-2 border-t border-[#202c33]/60 text-center">
-            <div className="bg-[#111b21] p-1 rounded-md border border-[#202c33]/70" title="Stories Viewed">
-              <p className="text-[10px] text-blue-400 font-mono font-bold leading-none">{stats.statusesViewed}</p>
-              <p className="text-[8px] text-slate-500 uppercase mt-0.5">Views</p>
-            </div>
-            <div className="bg-[#111b21] p-1 rounded-md border border-[#202c33]/70" title="Reactions Sent">
-              <p className="text-[10px] text-amber-400 font-mono font-bold leading-none">{stats.reactionsSent}</p>
-              <p className="text-[8px] text-slate-500 uppercase mt-0.5">Reacts</p>
-            </div>
-            <div className="bg-[#111b21] p-1 rounded-md border border-[#202c33]/70" title="Group Messages">
-              <p className="text-[10px] text-emerald-400 font-mono font-bold leading-none">{stats.campaignMessagesSent}</p>
-              <p className="text-[8px] text-slate-500 uppercase mt-0.5">Groups</p>
-            </div>
-            <div className="bg-[#111b21] p-1 rounded-md border border-[#202c33]/70" title="Stories Broadcasted">
-              <p className="text-[10px] text-purple-400 font-mono font-bold leading-none">{stats.broadcastsSent}</p>
-              <p className="text-[8px] text-slate-500 uppercase mt-0.5">Stories</p>
-            </div>
-          </div>
+          {/* Expanded Analysis Details */}
+          {isAnalysisExpanded && (
+            <div className="px-4 pb-3 pt-1 space-y-2.5 animate-in slide-in-from-top-2 duration-200">
+              {/* Mini Stat Badges */}
+              <div className="grid grid-cols-4 gap-1.5 text-center">
+                <div className="bg-[#111b21] p-1.5 rounded-xl border border-[#202c33]" title="Stories Viewed">
+                  <p className="text-[11px] text-blue-400 font-mono font-bold leading-none">{stats.statusesViewed}</p>
+                  <p className="text-[8px] text-slate-400 uppercase mt-0.5">Views</p>
+                </div>
+                <div className="bg-[#111b21] p-1.5 rounded-xl border border-[#202c33]" title="Reactions Sent">
+                  <p className="text-[11px] text-amber-400 font-mono font-bold leading-none">{stats.reactionsSent}</p>
+                  <p className="text-[8px] text-slate-400 uppercase mt-0.5">Reacts</p>
+                </div>
+                <div className="bg-[#111b21] p-1.5 rounded-xl border border-[#202c33]" title="Group Messages">
+                  <p className="text-[11px] text-emerald-400 font-mono font-bold leading-none">{stats.campaignMessagesSent}</p>
+                  <p className="text-[8px] text-slate-400 uppercase mt-0.5">Groups</p>
+                </div>
+                <div className="bg-[#111b21] p-1.5 rounded-xl border border-[#202c33]" title="Stories Broadcasted">
+                  <p className="text-[11px] text-purple-400 font-mono font-bold leading-none">{stats.broadcastsSent}</p>
+                  <p className="text-[8px] text-slate-400 uppercase mt-0.5">Stories</p>
+                </div>
+              </div>
 
-          {/* Sidebar Account Switcher */}
-          {statusData?.accounts && statusData.accounts.length > 0 && onSelectAccount && onAddAccount && (
-            <div className="mt-2.5 pt-2 border-t border-[#202c33]/60 flex justify-center">
-              <AccountSwitcher
-                accounts={statusData.accounts}
-                activeAccountId={statusData.activeAccountId || statusData.accounts[0]?.id || 'primary'}
-                onSelectAccount={onSelectAccount}
-                onAddAccount={onAddAccount}
-                onDisconnectAccount={onDisconnectAccount || (() => {})}
-                onRemoveAccount={onRemoveAccount || (() => {})}
-              />
+              {/* Sidebar Account Switcher */}
+              {statusData?.accounts && statusData.accounts.length > 0 && onSelectAccount && onAddAccount && (
+                <div className="pt-1 flex justify-center">
+                  <AccountSwitcher
+                    accounts={statusData.accounts}
+                    activeAccountId={statusData.activeAccountId || statusData.accounts[0]?.id || 'primary'}
+                    onSelectAccount={onSelectAccount}
+                    onAddAccount={onAddAccount}
+                    onDisconnectAccount={onDisconnectAccount || (() => {})}
+                    onRemoveAccount={onRemoveAccount || (() => {})}
+                  />
+                </div>
+              )}
             </div>
           )}
         </div>
 
         {/* Navigation Items (Scrollable) */}
-        <nav className="flex-1 overflow-y-auto px-3 py-3 space-y-1 scrollbar-thin scrollbar-thumb-slate-800">
-          <div className="px-2 py-1 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
-            Network & Features
+        <nav className="flex-1 overflow-y-auto px-3 py-3 space-y-1.5 scrollbar-thin scrollbar-thumb-slate-800">
+          <div className="px-2 py-1 text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center justify-between">
+            <span>Navigation Menu</span>
+            <span className="text-[9px] text-emerald-400 font-normal">Fast Access</span>
           </div>
 
           {navItems.map((item) => {
@@ -366,30 +423,27 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <button
                 key={item.id}
                 onClick={() => handleSelectTab(item.id)}
-                className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-left text-xs font-medium transition-all group cursor-pointer ${
+                className={`w-full flex items-center justify-between px-3 py-2.5 rounded-2xl text-left text-xs font-medium transition-all group cursor-pointer ${
                   isActive
-                    ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 shadow-sm shadow-emerald-950/40 font-semibold'
+                    ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/40 shadow-md shadow-emerald-950/40 font-semibold'
                     : 'text-slate-300 hover:text-white hover:bg-[#1f2c34]/70 border border-transparent'
                 }`}
               >
                 <div className="flex items-center gap-3 min-w-0">
-                  <div className={`p-1.5 rounded-lg transition-colors ${
-                    isActive 
-                      ? 'bg-emerald-500/20 text-emerald-400' 
-                      : 'bg-[#0b141a] text-slate-400 group-hover:text-slate-200'
-                  }`}>
-                    <Icon className="w-4 h-4 shrink-0" />
+                  {/* Colourful Gradient Icon Container */}
+                  <div className={`p-2 rounded-xl bg-gradient-to-tr ${item.iconGradient} shadow-sm transition-transform group-hover:scale-105 shrink-0`}>
+                    <Icon className="w-4 h-4 text-white" />
                   </div>
                   <div className="min-w-0">
-                    <p className="truncate leading-tight">{item.label}</p>
+                    <p className="truncate leading-tight font-semibold text-slate-100 group-hover:text-white">{item.label}</p>
                     <p className="text-[10px] text-slate-400 truncate font-normal leading-tight mt-0.5">{item.desc}</p>
                   </div>
                 </div>
 
                 <div className="flex items-center gap-1.5 shrink-0 ml-2">
                   {!currentUser && item.id !== 'landing' && item.id !== 'deploy' && (
-                    <span className="p-1 rounded bg-[#0b141a] text-slate-500 border border-[#202c33]" title="Sign in required">
-                      <Lock className="w-2.5 h-2.5 text-amber-400/80" />
+                    <span className="p-1 rounded-md bg-[#0b141a] text-slate-400 border border-[#202c33]" title="Sign in required">
+                      <Lock className="w-2.5 h-2.5 text-amber-400" />
                     </span>
                   )}
                   {item.badge && (

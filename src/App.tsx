@@ -17,6 +17,7 @@ import { CreateAdvertModal } from './components/CreateAdvertModal';
 import { AuthModal } from './components/AuthModal';
 import { AuthGate } from './components/AuthGate';
 import { AdminPortal } from './components/AdminPortal';
+import { PublicPitchPage } from './components/PublicPitchPage';
 import { usePwaInstall } from './hooks/usePwaInstall';
 import { EngineStatusResponse, ActivityLog, AdvertCampaign } from './types';
 import { auth, loginWithGoogle, logoutUser, testFirestoreConnection, isUserAdmin } from './lib/firebase';
@@ -101,6 +102,16 @@ export default function App() {
 
   // Effective authenticated user (Firebase user or session user)
   const effectiveUser = currentUser || (sessionUser as unknown as User) || null;
+
+  const [sponsorPromoterUid, setSponsorPromoterUid] = useState<string | null>(() => {
+    try {
+      if (typeof window !== 'undefined') {
+        const params = new URLSearchParams(window.location.search);
+        return params.get('promoter') || params.get('pitch') || params.get('sponsor');
+      }
+    } catch {}
+    return null;
+  });
 
   const {
     isInstallable,
@@ -409,6 +420,21 @@ export default function App() {
   const handleClearLogs = () => {
     setLogs([]);
   };
+
+  // If visitor arrives via a personal sponsor/pitch submission link
+  if (sponsorPromoterUid) {
+    return (
+      <PublicPitchPage
+        promoterUid={sponsorPromoterUid}
+        onBackToApp={() => {
+          try {
+            window.history.replaceState({}, '', window.location.pathname);
+          } catch {}
+          setSponsorPromoterUid(null);
+        }}
+      />
+    );
+  }
 
   return (
     <div className="min-h-screen max-w-full overflow-x-hidden bg-[#0b141a] text-slate-100 flex flex-col font-sans antialiased selection:bg-emerald-500 selection:text-white">

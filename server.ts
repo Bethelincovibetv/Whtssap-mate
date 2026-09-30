@@ -53,6 +53,15 @@ app.use(cors());
 app.use(express.json({ limit: '15mb' }));
 app.use(express.urlencoded({ extended: true, limit: '15mb' }));
 
+// 1. Keep-Alive endpoint to keep cloud/Render instance awake 24/7
+app.get('/ping', (req: Request, res: Response) => {
+  res.status(200).send('OK');
+});
+
+app.get('/health', (req: Request, res: Response) => {
+  res.status(200).json({ status: 'ok', time: new Date().toISOString() });
+});
+
 // In-Memory Configuration & Persistence
 const CONFIG_FILE = path.join(__dirname, 'config.json');
 
@@ -2449,7 +2458,7 @@ app.post('/api/advert-pitches/:id/action', (req: Request, res: Response) => {
       addLog(`✅ Pitch Approved & Published: "${serverPitches[index].title}"`, 'success', 'campaign');
     } else if (action === 'reject') {
       serverPitches[index].status = 'rejected';
-      addLog(`❌ Pitch Rejected: "${serverPitches[index].title}"`, 'warning', 'campaign');
+      addLog(`❌ Pitch Rejected: "${serverPitches[index].title}"`, 'warn', 'campaign');
     }
 
     savePitchesToFile();
@@ -2829,14 +2838,14 @@ app.post('/api/contacts/vcf/generate', async (req: Request, res: Response) => {
       } else {
         const groupMembers = Array.from(contactsMap.values()).filter(c => c.groupJids?.includes(jid));
         groupMembers.forEach((c) => {
-          const pushName = c.pushName || c.name;
+          const pushName = c.pushName || c.name || '';
           const hasRealName = Boolean(pushName && !pushName.startsWith('+') && !pushName.includes('Gain ') && !pushName.includes('Member '));
-          const contactName = hasRealName
+          const contactName: string = hasRealName
             ? (prefix && prefix.trim() ? `${prefix.trim()} ${pushName}` : pushName)
-            : (prefix && prefix.trim() ? `${prefix.trim()} +${c.phone}` : `+${c.phone}`);
+            : (prefix && prefix.trim() ? `${prefix.trim()} +${c.phone || ''}` : `+${c.phone || ''}`);
 
           targetContacts.push({
-            phone: c.phone,
+            phone: c.phone || '',
             name: contactName,
             org: groupSubject
           });
@@ -2847,14 +2856,14 @@ app.post('/api/contacts/vcf/generate', async (req: Request, res: Response) => {
         c.tags?.some(t => tagIds.includes(t))
       );
       tagged.forEach((c) => {
-        const pushName = c.pushName || c.name;
+        const pushName = c.pushName || c.name || '';
         const hasRealName = Boolean(pushName && !pushName.startsWith('+') && !pushName.includes('Gain ') && !pushName.includes('Member '));
-        const contactName = hasRealName
+        const contactName: string = hasRealName
           ? (prefix && prefix.trim() ? `${prefix.trim()} ${pushName}` : pushName)
-          : (prefix && prefix.trim() ? `${prefix.trim()} +${c.phone}` : `+${c.phone}`);
+          : (prefix && prefix.trim() ? `${prefix.trim()} +${c.phone || ''}` : `+${c.phone || ''}`);
 
         targetContacts.push({
-          phone: c.phone,
+          phone: c.phone || '',
           name: contactName,
           org: c.tags.join(', ')
         });
@@ -2863,14 +2872,14 @@ app.post('/api/contacts/vcf/generate', async (req: Request, res: Response) => {
     } else if (contactJids.length > 0) {
       contactJids.forEach((cJid: string) => {
         const c = contactsMap.get(cJid) || recordContact(cJid);
-        const pushName = c.pushName || c.name;
+        const pushName = c.pushName || c.name || '';
         const hasRealName = Boolean(pushName && !pushName.startsWith('+') && !pushName.includes('Gain ') && !pushName.includes('Member '));
-        const contactName = hasRealName
+        const contactName: string = hasRealName
           ? (prefix && prefix.trim() ? `${prefix.trim()} ${pushName}` : pushName)
-          : (prefix && prefix.trim() ? `${prefix.trim()} +${c.phone}` : `+${c.phone}`);
+          : (prefix && prefix.trim() ? `${prefix.trim()} +${c.phone || ''}` : `+${c.phone || ''}`);
 
         targetContacts.push({
-          phone: c.phone,
+          phone: c.phone || '',
           name: contactName
         });
       });
@@ -3213,7 +3222,7 @@ app.post('/api/campaigns/start', async (req: Request, res: Response) => {
         };
 
         scheduledCampaigns.unshift(newQueuedCampaign);
-        saveCampaignsToFile();
+        saveScheduledCampaignsToFile();
         addLog(`⏰ Aligned with schedule! Advert campaign "${newQueuedCampaign.name}" queued to broadcast in ~${estWaitMinutes}m after current campaign completes.`, 'info', 'campaign');
 
         return res.json({

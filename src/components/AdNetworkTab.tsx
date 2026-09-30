@@ -23,7 +23,8 @@ import {
   Trash2,
   Tag,
   Flame,
-  Send
+  Send,
+  Copy
 } from 'lucide-react';
 import { User } from 'firebase/auth';
 import { db, auth, handleFirestoreError, OperationType, isUserAdmin, ADMIN_EMAIL, sanitizeFirestoreData } from '../lib/firebase';
@@ -62,20 +63,27 @@ export const AdNetworkTab: React.FC<AdNetworkTabProps> = ({
   onOpenConnect,
   onOpenCampaign
 }) => {
-  const [activeSubTab, setActiveSubTab] = useState<'pool_manager' | 'adverts_feed' | 'admin_hub'>('pool_manager');
+  const [activeSubTab, setActiveSubTab] = useState<'pool_manager' | 'adverts_feed' | 'sponsor_pitches' | 'sponsor_link' | 'admin_hub'>('pool_manager');
   const [localGroups, setLocalGroups] = useState<GroupItem[]>([]);
   const [loadingGroups, setLoadingGroups] = useState(false);
   const [pooledGroups, setPooledGroups] = useState<PooledGroup[]>([]);
   const [adverts, setAdverts] = useState<AdvertCampaign[]>([]);
+  const [pitches, setPitches] = useState<any[]>([]);
   const [loadingAdverts, setLoadingAdverts] = useState(false);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>([]);
   const [savingPool, setSavingPool] = useState(false);
   const [feedbackMsg, setFeedbackMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [broadcastingAdvertId, setBroadcastingAdvertId] = useState<string | null>(null);
+  const [copiedPersonalLink, setCopiedPersonalLink] = useState(false);
 
   const isAdmin = isUserAdmin(currentUser);
   const isConnected = statusData?.status === 'connected';
+
+  // Personal Sponsor Submission Link for this user
+  const personalSponsorLink = typeof window !== 'undefined' && currentUser?.uid 
+    ? `${window.location.origin}/?promoter=${currentUser.uid}`
+    : typeof window !== 'undefined' ? `${window.location.origin}/?promoter=demo` : '';
 
   // Fetch local groups from WhatsApp session
   const fetchLocalGroups = useCallback(async () => {
@@ -94,18 +102,19 @@ export const AdNetworkTab: React.FC<AdNetworkTabProps> = ({
     }
   }, [isConnected]);
 
-  // Fetch Server-stored Pooled Groups and Adverts
+  // Fetch Server-stored Pooled Groups, Adverts, and Pitches
   const fetchNetworkData = useCallback(async () => {
     try {
-      const [groupsRes, advertsRes] = await Promise.all([
+      const hostParam = currentUser?.uid ? `?hostUid=${currentUser.uid}` : '';
+      const [groupsRes, advertsRes, pitchesRes] = await Promise.all([
         fetch('/api/ad-network/pooled-groups'),
-        fetch('/api/ad-network/adverts')
+        fetch('/api/ad-network/adverts'),
+        fetch(`/api/advert-pitches${hostParam}`).catch(() => null)
       ]);
       if (groupsRes.ok) {
         const data = await groupsRes.json();
         if (data.groups && Array.isArray(data.groups)) {
           setPooledGroups(prev => {
-            // merge server and firestore items uniquely
             const map = new Map<string, PooledGroup>();
             prev.forEach(g => map.set(g.id, g));
             data.groups.forEach((g: PooledGroup) => map.set(g.id, g));
@@ -124,14 +133,50 @@ export const AdNetworkTab: React.FC<AdNetworkTabProps> = ({
           });
         }
       }
+      if (pitchesRes && pitchesRes.ok) {
+        const pData = await pitchesRes.json();
+        if (pData.pitches) {
+          setPitches(pData.pitches);
+        }
+      }
     } catch (e) {
       console.warn('Network data fetch note:', e);
     }
-  }, []);
+  }, [currentUser?.uid]);
 
   useEffect(() => {
     fetchNetworkData();
   }, [fetchNetworkData]);
+
+  // Listen to Firestore Pitches
+  useEffect(() => {
+    if (!auth.currentUser) return;
+    let unsub: (() => void) | null = null;
+    try {
+      unsub = onSnapshot(collection(db, 'advert_pitches'), (snapshot) => {
+        const list: any[] = [];
+        snapshot.forEach((d) => {
+          const item = d.data();
+          if (isAdmin || item.targetHostUid === currentUser?.uid) {
+            list.push(item);
+          }
+        });
+        list.sort((a, b) => new Date(b.submittedAt || b.createdAt || 0).getTime() - new Date(a.submittedAt || a.createdAt || 0).getTime());
+        setPitches(list);
+      }, (err) => {
+        try {
+          handleFirestoreError(err, OperationType.GET, 'advert_pitches');
+        } catch (fsErr) {
+          console.warn('Firestore pitches listener note:', fsErr);
+        }
+      });
+    } catch (e) {
+      console.warn('Firestore pitches subscription note:', e);
+    }
+    return () => {
+      if (unsub) unsub();
+    };
+  }, [currentUser, isAdmin]);
 
   // Listen to Firestore Pooled Groups
   useEffect(() => {
@@ -424,10 +469,17 @@ export const AdNetworkTab: React.FC<AdNetworkTabProps> = ({
           }
         }
 
-        setFeedbackMsg({
-          type: 'success',
-          text: `🚀 Automated broadcast started across ALL ${targetGroupJids.length} groups for "${advert.title}"!`
-        });
+        if (data.queued || data.scheduled) {
+          setFeedbackMsg({
+            type: 'success',
+            text: `⏰ Aligned with schedule! Advert "${advert.title}" is queued to broadcast automatically across ${targetGroupJids.length} groups once current active campaign completes.`
+          });
+        } else {
+          setFeedbackMsg({
+            type: 'success',
+            text: `🚀 Automated broadcast started across ALL ${targetGroupJids.length} groups for "${advert.title}"!`
+          });
+        }
         onOpenCampaign();
       } else {
         setFeedbackMsg({ type: 'error', text: data.error || 'Failed to start automated broadcast.' });
@@ -436,6 +488,70 @@ export const AdNetworkTab: React.FC<AdNetworkTabProps> = ({
       setFeedbackMsg({ type: 'error', text: err.message || 'Broadcast error' });
     } finally {
       setBroadcastingAdvertId(null);
+    }
+  };
+
+  // Sponsor Pitch Actions
+  const handleApprovePitch = async (pitch: any) => {
+    try {
+      // 1. Server-side approve
+      const res = await fetch(`/api/advert-pitches/${encodeURIComponent(pitch.id)}/action`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'approve' })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        // 2. Firestore update if authenticated
+        if (auth.currentUser) {
+          try {
+            await updateDoc(doc(db, 'advert_pitches', pitch.id), {
+              status: 'approved',
+              approvedAt: new Date().toISOString()
+            });
+          } catch (e) {}
+        }
+        setPitches(prev => prev.map(p => p.id === pitch.id ? { ...p, status: 'approved' } : p));
+        setFeedbackMsg({ type: 'success', text: `✓ Sponsor pitch "${pitch.title}" approved & converted to active advert!` });
+      }
+    } catch (e: any) {
+      setFeedbackMsg({ type: 'error', text: e.message || 'Failed to approve pitch.' });
+    }
+  };
+
+  const handleRejectPitch = async (pitchId: string) => {
+    try {
+      await fetch(`/api/advert-pitches/${encodeURIComponent(pitchId)}/action`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'reject' })
+      });
+      if (auth.currentUser) {
+        try {
+          await updateDoc(doc(db, 'advert_pitches', pitchId), {
+            status: 'rejected'
+          });
+        } catch (e) {}
+      }
+      setPitches(prev => prev.map(p => p.id === pitchId ? { ...p, status: 'rejected' } : p));
+      setFeedbackMsg({ type: 'success', text: 'Sponsor pitch marked as rejected.' });
+    } catch (e: any) {
+      setFeedbackMsg({ type: 'error', text: e.message || 'Failed to reject pitch.' });
+    }
+  };
+
+  const handleDeletePitch = async (pitchId: string) => {
+    try {
+      await fetch(`/api/advert-pitches/${encodeURIComponent(pitchId)}`, { method: 'DELETE' });
+      if (auth.currentUser) {
+        try {
+          await deleteDoc(doc(db, 'advert_pitches', pitchId));
+        } catch (e) {}
+      }
+      setPitches(prev => prev.filter(p => p.id !== pitchId));
+      setFeedbackMsg({ type: 'success', text: 'Pitch removed.' });
+    } catch (e: any) {
+      setFeedbackMsg({ type: 'error', text: e.message || 'Failed to delete pitch.' });
     }
   };
 
@@ -466,6 +582,7 @@ export const AdNetworkTab: React.FC<AdNetworkTabProps> = ({
     }
   };
 
+  const pendingPitchesCount = pitches.filter(p => p.status === 'pending_approval').length;
   const totalNetworkReach = pooledGroups.reduce((acc, g) => acc + (g.participantsCount || 0), 0);
 
   return (
@@ -539,6 +656,35 @@ export const AdNetworkTab: React.FC<AdNetworkTabProps> = ({
           >
             <Rocket className="w-3.5 h-3.5" />
             <span>Adverts ({adverts.length})</span>
+          </button>
+
+          <button
+            onClick={() => setActiveSubTab('sponsor_pitches')}
+            className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs sm:text-sm font-semibold transition-all cursor-pointer shrink-0 ${
+              activeSubTab === 'sponsor_pitches'
+                ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-lg'
+                : 'text-slate-400 hover:text-white hover:bg-[#202c33]'
+            }`}
+          >
+            <Send className="w-3.5 h-3.5" />
+            <span>Inbound Pitches</span>
+            {pendingPitchesCount > 0 && (
+              <span className="px-1.5 py-0.2 rounded-full bg-amber-500 text-slate-950 font-bold text-[10px] animate-pulse">
+                {pendingPitchesCount}
+              </span>
+            )}
+          </button>
+
+          <button
+            onClick={() => setActiveSubTab('sponsor_link')}
+            className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs sm:text-sm font-semibold transition-all cursor-pointer shrink-0 ${
+              activeSubTab === 'sponsor_link'
+                ? 'bg-gradient-to-r from-purple-600 to-indigo-600 text-white shadow-lg'
+                : 'text-purple-400 hover:text-white hover:bg-[#202c33]'
+            }`}
+          >
+            <Share2 className="w-3.5 h-3.5" />
+            <span>My Ad Network Link</span>
           </button>
 
           {isAdmin && (
@@ -785,7 +931,229 @@ export const AdNetworkTab: React.FC<AdNetworkTabProps> = ({
         </div>
       )}
 
-      {/* SUB-TAB 3: ADMIN MODERATION (Exclusive to bethelgoodgift3@gmail.com) */}
+      {/* SUB-TAB 3: INBOUND SPONSOR PITCHES */}
+      {activeSubTab === 'sponsor_pitches' && (
+        <div className="p-4 sm:p-6 rounded-2xl bg-[#111b21] border border-[#202c33] space-y-6 shadow-xl">
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 pb-4 border-b border-[#202c33]">
+            <div>
+              <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                <Send className="w-4 h-4 text-emerald-400" />
+                Inbound Sponsor Pitches ({pitches.length})
+              </h3>
+              <p className="text-xs text-slate-400 mt-0.5">
+                External clients can submit adverts to your ad network via your personal link without accessing your dashboard.
+              </p>
+            </div>
+
+            <button
+              onClick={() => setActiveSubTab('sponsor_link')}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-purple-600/20 hover:bg-purple-600/30 border border-purple-500/30 text-purple-300 text-xs font-semibold cursor-pointer"
+            >
+              <Share2 className="w-3.5 h-3.5" />
+              <span>Get Sponsor Link</span>
+            </button>
+          </div>
+
+          {pitches.length === 0 ? (
+            <div className="p-8 rounded-2xl bg-[#0b141a] border border-[#202c33] text-center space-y-3">
+              <div className="w-12 h-12 rounded-2xl bg-[#111b21] text-slate-500 flex items-center justify-center mx-auto border border-[#202c33]">
+                <Send className="w-6 h-6" />
+              </div>
+              <p className="text-sm font-semibold text-slate-300">No Inbound Pitches Yet</p>
+              <p className="text-xs text-slate-500 max-w-md mx-auto">
+                Share your personal ad network link on social media, WhatsApp groups, or with clients. When someone submits an advert pitch, it appears here for your approval.
+              </p>
+              <button
+                onClick={() => setActiveSubTab('sponsor_link')}
+                className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition-all cursor-pointer shadow"
+              >
+                Copy My Sponsor Link
+              </button>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {pitches.map((pitch) => (
+                <div 
+                  key={pitch.id} 
+                  className={`p-5 rounded-2xl bg-[#0b141a] border space-y-4 shadow-lg transition-all ${
+                    pitch.status === 'approved' 
+                      ? 'border-emerald-500/40 bg-emerald-950/10' 
+                      : pitch.status === 'rejected' 
+                      ? 'border-rose-500/30 opacity-75' 
+                      : 'border-amber-500/40'
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="space-y-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase ${
+                          pitch.status === 'approved' 
+                            ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' 
+                            : pitch.status === 'rejected' 
+                            ? 'bg-rose-500/20 text-rose-400 border border-rose-500/30' 
+                            : 'bg-amber-500/20 text-amber-400 border border-amber-500/30 animate-pulse'
+                        }`}>
+                          {pitch.status === 'pending_approval' ? 'Pending Approval' : pitch.status}
+                        </span>
+                        <span className="text-[10px] text-slate-500">
+                          {new Date(pitch.submittedAt || pitch.createdAt || Date.now()).toLocaleDateString()}
+                        </span>
+                      </div>
+                      <h4 className="text-sm font-bold text-white truncate">{pitch.title}</h4>
+                      <p className="text-[11px] text-slate-400">
+                        By: <span className="text-slate-200 font-semibold">{pitch.submitterName}</span> ({pitch.submitterContact})
+                      </p>
+                    </div>
+
+                    {pitch.budget > 0 && (
+                      <div className="px-2.5 py-1 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-400 text-xs font-mono font-bold shrink-0">
+                        ${pitch.budget} Offer
+                      </div>
+                    )}
+                  </div>
+
+                  {pitch.mediaUrl && (
+                    <div className="w-full h-32 rounded-xl overflow-hidden border border-[#202c33] bg-black/40">
+                      <img src={pitch.mediaUrl} alt="Banner" className="w-full h-full object-cover" />
+                    </div>
+                  )}
+
+                  <div className="p-3 rounded-xl bg-[#111b21] border border-[#202c33] text-xs text-slate-200 whitespace-pre-wrap font-sans leading-relaxed max-h-28 overflow-y-auto">
+                    {pitch.advertContent}
+                  </div>
+
+                  {pitch.linkUrl && (
+                    <a
+                      href={pitch.linkUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-xs text-emerald-400 hover:underline flex items-center gap-1 truncate"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5 shrink-0" />
+                      <span className="truncate">{pitch.linkUrl}</span>
+                    </a>
+                  )}
+
+                  {/* Actions */}
+                  <div className="flex items-center justify-between pt-3 border-t border-[#202c33]">
+                    <button
+                      onClick={() => handleDeletePitch(pitch.id)}
+                      className="p-1.5 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 transition-colors cursor-pointer"
+                      title="Delete pitch"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+
+                    <div className="flex items-center gap-2">
+                      {pitch.status === 'pending_approval' && (
+                        <>
+                          <button
+                            onClick={() => handleRejectPitch(pitch.id)}
+                            className="px-3 py-1.5 rounded-xl bg-[#111b21] hover:bg-rose-500/20 text-slate-300 hover:text-rose-400 border border-[#202c33] text-xs font-semibold transition-all cursor-pointer"
+                          >
+                            Reject
+                          </button>
+                          <button
+                            onClick={() => handleApprovePitch(pitch)}
+                            className="px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-500 hover:from-emerald-500 hover:to-teal-400 text-white text-xs font-bold transition-all shadow flex items-center gap-1 cursor-pointer"
+                          >
+                            <Check className="w-3.5 h-3.5" />
+                            <span>Approve & Publish</span>
+                          </button>
+                        </>
+                      )}
+
+                      {pitch.status === 'approved' && (
+                        <button
+                          onClick={() => {
+                            onOpenCampaign({
+                              templateText: pitch.advertContent,
+                              imageUrl: pitch.mediaUrl
+                            });
+                          }}
+                          className="px-3.5 py-1.5 rounded-xl bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-400 border border-emerald-500/30 text-xs font-bold transition-all flex items-center gap-1 cursor-pointer"
+                        >
+                          <Rocket className="w-3.5 h-3.5" />
+                          <span>Schedule Broadcast</span>
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* SUB-TAB 4: PERSONAL SPONSOR LINK GENERATOR */}
+      {activeSubTab === 'sponsor_link' && (
+        <div className="p-6 rounded-3xl bg-[#111b21] border border-[#202c33] space-y-6 shadow-2xl">
+          <div className="flex items-center gap-3">
+            <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-purple-600 to-indigo-600 flex items-center justify-center text-white shadow-lg shadow-purple-950/50">
+              <Share2 className="w-6 h-6" />
+            </div>
+            <div>
+              <h3 className="text-base sm:text-lg font-bold text-white">Your Personal Ad Network Submission Link</h3>
+              <p className="text-xs text-slate-400">Allows businesses, partners, and clients to submit adverts directly to your WhatsApp ad network.</p>
+            </div>
+          </div>
+
+          <div className="p-5 rounded-2xl bg-[#0b141a] border border-purple-500/30 space-y-4">
+            <div className="space-y-1">
+              <label className="text-xs font-bold text-slate-300">Public Sponsor Pitch URL</label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  readOnly
+                  value={personalSponsorLink}
+                  className="w-full px-4 py-3 rounded-xl bg-[#111b21] border border-[#202c33] text-xs font-mono text-purple-300 outline-none select-all"
+                />
+                <button
+                  onClick={() => {
+                    navigator.clipboard.writeText(personalSponsorLink);
+                    setCopiedPersonalLink(true);
+                    setTimeout(() => setCopiedPersonalLink(false), 2000);
+                  }}
+                  className="px-4 py-3 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-xs font-bold transition-all shrink-0 flex items-center gap-1.5 cursor-pointer shadow"
+                >
+                  {copiedPersonalLink ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
+                  <span>{copiedPersonalLink ? 'Copied!' : 'Copy Link'}</span>
+                </button>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2 text-xs">
+              <div className="p-3 rounded-xl bg-[#111b21] border border-[#202c33]">
+                <p className="font-bold text-white">1. Share Your Link</p>
+                <p className="text-[11px] text-slate-400 mt-1">Post your link on WhatsApp, status, Telegram, or send to business advertisers.</p>
+              </div>
+              <div className="p-3 rounded-xl bg-[#111b21] border border-[#202c33]">
+                <p className="font-bold text-white">2. Clients Submit Adverts</p>
+                <p className="text-[11px] text-slate-400 mt-1">Clients fill out their advert details, banner, and proposed budget without accessing your account.</p>
+              </div>
+              <div className="p-3 rounded-xl bg-[#111b21] border border-[#202c33]">
+                <p className="font-bold text-white">3. Review & Approve</p>
+                <p className="text-[11px] text-slate-400 mt-1">Approve adverts with 1-click to auto-broadcast across your pooled WhatsApp groups.</p>
+              </div>
+            </div>
+
+            <div className="pt-2 flex items-center justify-between flex-wrap gap-2">
+              <a
+                href={personalSponsorLink}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1.5 text-xs text-purple-400 hover:text-purple-300 hover:underline font-semibold"
+              >
+                <ExternalLink className="w-3.5 h-3.5" />
+                <span>Open Public Submission Page in New Tab</span>
+              </a>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* SUB-TAB 5: ADMIN MODERATION (Exclusive to bethelgoodgift3@gmail.com) */}
       {isAdmin && activeSubTab === 'admin_hub' && (
         <div className="p-4 sm:p-6 rounded-2xl bg-[#111b21] border border-amber-500/30 space-y-6 shadow-2xl">
           
